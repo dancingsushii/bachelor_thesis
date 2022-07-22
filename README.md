@@ -49,6 +49,8 @@ During research for my topic I found a plenty of useful ressources, libraries, p
 
 # Thesis link
 
+https://www.overleaf.com/project/60a116036e229ad6f3caaf23
+
 # Technical details
 
 
