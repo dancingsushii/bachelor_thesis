@@ -58,6 +58,11 @@ During research for my topic I found a plenty of useful ressources, libraries, p
  2. 
 
 ## Useful commands
+Report file system disk space usage. The `-h` flag provides human readable output (which makes reading of the output - easier).
+
+```
+df -h
+```
 
 ## Useful links (to be sorted)
 https://vhernando.github.io/run-bitcoin-node-debian-how-to
