@@ -48,3 +48,17 @@ To be done.
 During research for my topic I found a plenty of useful ressources, libraries, papers, enterpreneurs, podcasts etc. I collect them and listed there for better usage.
 
 # Thesis link
+
+# Technical details
+
+
+## Always relevant questions
+
+ 1. [Why should I use a particular user and not root for bitcoin running?](https://bitcoin.stackexchange.com/questions/46562/newbie-question-bitcoind-installation-doubte)
+ 2. 
+
+## Useful commands
+
+## Useful links (to be sorted)
+https://vhernando.github.io/run-bitcoin-node-debian-how-to
+https://bitcointalk.org/index.php?topic=5395925.0
