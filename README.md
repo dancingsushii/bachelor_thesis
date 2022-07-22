@@ -61,5 +61,7 @@ During research for my topic I found a plenty of useful ressources, libraries, p
 
 ## Useful links (to be sorted)
 https://vhernando.github.io/run-bitcoin-node-debian-how-to
+
 https://bitcointalk.org/index.php?topic=5395925.0
+
 https://jlopp.github.io/bitcoin-core-config-generator/#config=eyJjaGFpbiI6eyJjaGFpbiI6InRlc3QifX0=
