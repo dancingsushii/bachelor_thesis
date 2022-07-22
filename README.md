@@ -70,3 +70,5 @@ https://vhernando.github.io/run-bitcoin-node-debian-how-to
 https://bitcointalk.org/index.php?topic=5395925.0
 
 https://jlopp.github.io/bitcoin-core-config-generator/#config=eyJjaGFpbiI6eyJjaGFpbiI6InRlc3QifX0=
+
+https://medium.com/@retprogramisto/how-to-install-a-pruned-bitcoin-full-node-on-ubuntu-vps-2b81fe170ddf
