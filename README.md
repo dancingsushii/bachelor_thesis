@@ -53,6 +53,10 @@ https://www.overleaf.com/project/60a116036e229ad6f3caaf23
 
 # Technical details
 
+## Useful commands
+The bunch of problems I've faced during mz bachelor thesis creation.
+1. I had some problems with dowloading a testnet chain. I have constanly received an error "Peer=N is stalling block download, disconnecting". I had some concerns this could be because of some hardware problems or DNS settings bit then I found out that mainnet is downloading smoothly. So I read some advices [here](https://github.com/bitcoin/bitcoin/issues/11037), [here](https://bitcointalk.org/index.php?topic=1666725.0) and [here](https://github.com/bitcoin/bitcoin/issues/8518). And I have some thoughts about it:
+
 
 ## Always relevant questions
 
@@ -64,6 +68,11 @@ Report file system disk space usage. The `-h` flag provides human readable outpu
 
 ```
 df -h
+```
+Listing open ports in use.
+
+```
+sudo ss -tulpn | grep LISTEN
 ```
 
 ## Useful links (to be sorted)
