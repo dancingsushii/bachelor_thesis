@@ -54,6 +54,16 @@ https://www.overleaf.com/project/60a116036e229ad6f3caaf23
 # Technical details
 
 ## Useful commands
+Report file system disk space usage. The `-h` flag provides human readable output (which makes reading of the output - easier).
+
+```
+df -h
+```
+Listing open ports in use.
+
+```
+sudo ss -tulpn | grep LISTEN
+```
 
 ## Common mistakes / lessons learned
 The bunch of problems I've faced during my bachelor thesis creation.
@@ -65,17 +75,6 @@ The bunch of problems I've faced during my bachelor thesis creation.
  1. [Why should I use a particular user and not root for bitcoin running?](https://bitcoin.stackexchange.com/questions/46562/newbie-question-bitcoind-installation-doubte)
  2. 
 
-## Useful commands
-Report file system disk space usage. The `-h` flag provides human readable output (which makes reading of the output - easier).
-
-```
-df -h
-```
-Listing open ports in use.
-
-```
-sudo ss -tulpn | grep LISTEN
-```
 
 ## Useful links (to be sorted)
 https://vhernando.github.io/run-bitcoin-node-debian-how-to
