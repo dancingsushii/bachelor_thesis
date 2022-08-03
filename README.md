@@ -67,7 +67,7 @@ sudo ss -tulpn | grep LISTEN
 
 ## Common mistakes / lessons learned
 The bunch of problems I've faced during my bachelor thesis creation.
-1. I had some problems with dowloading a testnet chain. I have constanly received an error "Peer=N is stalling block download, disconnecting". I had some concerns this could be because of some hardware problems or DNS settings bit then I found out that mainnet is downloading smoothly. So I read some advices [here](https://github.com/bitcoin/bitcoin/issues/11037), [here](https://bitcointalk.org/index.php?topic=1666725.0) and [here](https://github.com/bitcoin/bitcoin/issues/8518). And I have some thoughts about it:
+1. I had some problems with dowloading a testnet chain. I have constanly received an error "Peer=N is stalling block download, disconnecting". I had some concerns this could be because of some hardware problems or DNS settings bit then I found out that mainnet is downloading smoothly. So I read some advices [here](https://github.com/bitcoin/bitcoin/issues/11037), [here](https://bitcointalk.org/index.php?topic=1666725.0) and [here](https://github.com/bitcoin/bitcoin/issues/8518). Which steps I tried: a) maxconnection=1 didn't help, b) -reindex didn't help.
 
 
 ## Always relevant questions
