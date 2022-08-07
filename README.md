@@ -72,6 +72,11 @@ Listing open ports in use.
 ```
 sudo ss -tulpn | grep LISTEN
 ```
+Restart Ubuntu.
+
+```
+sudo shutdown -r now
+```
 
 ## Common mistakes / lessons learned
 The bunch of problems I've faced during my bachelor thesis creation.
