@@ -39,9 +39,17 @@ To accept RPC-JSON commands run
  
  For the first time this command will start downloading the blockchain so it can last for some time. In my case it was 8 hours because of the prunning.
 
-# Installation on Raspberry Pi 4
+# Raspberry Pi 4
 
 To be done.
+
+## Isntallation on Raspberry Pi 4
+
+## Access Raspberry full node over SSH and Tor
+
+```
+torsocks ssh admin@ugssvwei5ujvp64i733jsubcavzh4gtad5mjb26rws3df2lnwgpwaxqd.onion
+```
 
 # Useful links
 
