@@ -22,7 +22,7 @@ import concurrent.futures
 
 # For time evaluation of experiment
 def duration_since(last_time):
-    delta = time.time() - last_time  # duration in seconds 
+    delta = time.time() - last_time  # duration in seconds
     if delta < 60:
         duration = delta
         measure = 'seconds'
@@ -43,73 +43,64 @@ def write_and_print(filename, text):
     f.close()
     print(text)
 
-# Returns to G connected components of G in G.subgraph
-def connected_component_subgraphs(G):
-    for c in nx.connected_components(G):
-        yield G.subgraph(c)
+# Proceed with all transactions without rebalancing that is to execute them anyway.
+def no_rebalancing(topology, transaction_list):
+    # do all transactions that are possible
 
-# Change the channel states, PLUGIN as RPC call to change states in implementation
-def channel_update(topology, from_node, to_node, amount):
-    topology[from_node][to_node]['satoshis'] -= amount
-    topology[to_node][from_node]['satoshis'] += amount
+    successful_transactions = 0
+    successful_volume = 0
 
-    return topology
+    for transaction in transaction_list:
+        successful_transaction, failed_at_channel, topology = execute_transaction(topology, transaction)
 
-# TO DO be clarified PLUGIN
-def execute_transaction(topology, transaction):
-    # execute a single transaction 
-    source, destination, amount = transaction
-    successful_transaction = True
-    failed_at_channel = False
+        if successful_transaction:
+            successful_transactions += 1
+            successful_volume += transaction[2]
 
-    # compute shortest path according to weights
-    shortest_path = nx.shortest_path(topology, source, destination, weight='weight')
-    shortest_path_edges = [(shortest_path[i], shortest_path[i + 1]) for i in range(len(shortest_path) - 1)]
-    shortest_path_edges.reverse()
+    return successful_transactions, successful_volume
 
-    # compute routing fees backwards and check if the capacities suffice 
-    stacked_payments = []
-    current_edge = shortest_path_edges.pop()
-    hop, nexthop = current_edge
-    current_amount = amount
-    current_fee = topology[hop][nexthop]['base_fee'] + topology[hop][nexthop]['relative_fee'] * current_amount
+# Find cycles for circular rebalancing functionality.
+def find_cycles(topology, source, destination, number_of_cycles):
+    # returns at most number_of_cycles-many cycles of size at least 3 that end with channel
+    # (source,destination) should be the last edge of the cycle
+    # uses BFS discovery
 
-    if topology[hop][nexthop]['satoshis'] > current_amount:
-        # if the last edge in the path has enough capacity, proceed to checking the previous ones 
-        stacked_payments.append((hop, nexthop, current_amount))
+    BFS_tree = nx.DiGraph()
 
-        # repeat backwards for the remaining edges        
-        while shortest_path_edges:
+    distance_k_nodes = {0: [destination]}
+    visited = [source, destination]
 
-            hop, nexthop = shortest_path_edges.pop()
-            current_amount += current_fee
-            current_fee = topology[hop][nexthop]['base_fee'] + topology[hop][nexthop]['relative_fee'] * current_amount
+    cycles = []
+    distance_from_origin = 1
+    max_depth_of_BFS = 10
 
-            if topology[hop][nexthop]['satoshis'] > current_amount:
-                stacked_payments.append((hop, nexthop, current_amount))
-            else:
-                successful_transaction = False
-                failed_at_channel = (hop, nexthop, amount)
-                break
-    else:
-        successful_transaction = False
-        failed_at_channel = (hop, nexthop, amount)
+    while len(cycles) <= number_of_cycles and distance_from_origin < max_depth_of_BFS:
+        # find distance_from_origin nodes
+        distance_k_nodes[distance_from_origin] = []
 
-    # if the transaction can be carried out, execute the transaction
-    if successful_transaction:
-        while stacked_payments:
-            (src, dst, trx) = stacked_payments.pop()
-            topology = channel_update(topology, src, dst, trx)
+        for node in distance_k_nodes[distance_from_origin - 1]:
+            for new_node in [e[1] for e in topology.out_edges(node) if e[1] not in visited]:
+                # add to topology
+                BFS_tree.add_edge(node, new_node)
 
-    return successful_transaction, failed_at_channel, topology
+                visited.append(new_node)
 
-# TO DO be clarified PLUGIN
+                # check for cycles
+                if (new_node, source) in topology.edges:
+                    new_cycle = nx.shortest_path(BFS_tree, destination, new_node) + [source]
+                    cycles.append(new_cycle)
+
+        distance_from_origin += 1
+
+    return cycles[:number_of_cycles]
+
+# Rebalance function for cilcular rebalancing.
 def rebalance(topology, cycle, amount):
     # Rebalancing a cycle in the form: [v1, v2, ..., vk]
 
     channels_in_cycle = [(cycle[i], cycle[(i + 1) % len(cycle)]) for i in range(len(cycle))]
 
-    # check if possible to rebalance based on: amount and willingness to rebalance 
+    # check if possible to rebalance based on: amount and willingness to rebalance
     topology = update_pc_states(topology)
 
     channel_states = {topology[u][v]['state'] for u, v in channels_in_cycle}
@@ -133,13 +124,103 @@ def rebalance(topology, cycle, amount):
 
     return topology, rebalancing_successful
 
-# Decide whether a node is participating or not, curretnly "participating" by default
+# Same functionality as in circular rebalancing.
+def LN_local_rebalancing(topology, transaction_list, max_rebalancings_per_transaction, cycle_search_cutoff):
+    # LN local rebalancing by cycle finding
+
+    # init success counters
+    successful_transactions = 0
+    successful_volume = 0
+    number_of_rebalanced_edges = 0
+    rebalance_stats = {(i + 1): 0 for i in range(max_rebalancings_per_transaction)}
+
+    # execute as many transactions as possible
+    for transaction in transaction_list:
+        src, dst, trx = transaction
+
+        successful_transaction, failed_at_channel, topology = execute_transaction(topology, transaction)
+
+        # if not successful, try to rebalance
+        rebalancings = 0
+        cycle_pool = []
+        cycle_pool_empty = False
+
+        while not successful_transaction and rebalancings < max_rebalancings_per_transaction and not cycle_pool_empty:
+            # info of channel where the transaction failed
+            x, y, fwd_amount = failed_at_channel
+
+            # find cycles that include the reversed failed channel
+            if not cycle_pool:
+                cycle_pool = find_cycles(topology, y, x, cycle_search_cutoff)
+
+                # if no cycle exists, break
+                if not cycle_pool:
+                    print(f'No cycles found! deg({x}) = {topology.degree[x]}')
+                    break
+                else:
+                    cycle_pool_empty = False
+
+            # rebalance
+            cycle = cycle_pool.pop()
+
+            # true after the last cycle was poped
+            if not cycle_pool:
+                cycle_pool_empty = True
+
+            channels_in_cycle = [(cycle[i], cycle[(i + 1) % len(cycle)]) for i in range(len(cycle))]
+
+            # if the initial balance is not enough to cover the forwarded amount, break
+            if topology[x][y]['initial balance'] < fwd_amount:
+                print("Transaction infeasible: initial balance doesn't suffice")
+                break
+
+            # rebalancing should restore the initial balance in channel (x,y)
+            rebalancing_amount = topology[x][y]['initial balance'] - topology[x][y]['satoshis']
+
+            # execute rebalancing if the first cycle has enough capacity
+            topology, rebalancing_successful = rebalance(topology, cycle, rebalancing_amount)
+
+            # check if the transaction can succeed
+            if rebalancing_successful:
+                print('Rebalancing succeeded!')
+                number_of_rebalanced_edges += len(channels_in_cycle)
+                rebalancings += 1
+                rebalance_stats[rebalancings] += 1
+
+                successful_transaction, new_failed_at_channel, topology = execute_transaction(topology, transaction)
+
+                # if the transaction failed at a new channel, recompute the cycle pool
+                if failed_at_channel != new_failed_at_channel:
+                    cycle_pool = []
+                    failed_at_channel = new_failed_at_channel
+            else:
+                print('Rebalancing failed!')
+
+        # if the transaction was successful (with or without rebalancing), update the output
+        if successful_transaction:
+            successful_transactions += 1
+            successful_volume += transaction[2]
+
+            # print rebalancing statistics
+    rebalancing_stats_str = ''
+    for reb in rebalance_stats:
+        rebalancing_stats_str += f'Channels rebalanced {reb} time(s): {rebalance_stats[reb]}. '
+    print(f'rebalancing statistics: {rebalancing_stats_str}')
+
+    return successful_transactions, successful_volume, number_of_rebalanced_edges
+
+# Returns to G connected components of G in G.subgraph
+def connected_component_subgraphs(G):
+    for c in nx.connected_components(G):
+        yield G.subgraph(c)
+
+# Decide whether a node is participating or not, currently "participating" by default
 def pc_state(topology, channel):
     # no states
     return 'participating'
 
     # The code below was unreachable so I commented it out.
-    # computes pc state with respect to rebalancing intention 
+    # computes pc state with respect to rebalancing intention
     # s, d = channel
     # random_state = False
     #
@@ -162,23 +243,14 @@ def pc_state(topology, channel):
     #
     # return state
 
-
-def update_pc_states(topology):
-    # updates pc state with respect to rebalancing intention     
-    for channel in topology.edges:
-        u, v = channel
-        topology[u][v]['state'] = pc_state(topology, channel)
-
-    return topology
-
-
+# Creating a PCN from a Lightning snapshot that is take the biggest subgraph and create parameters: initial balances, capacities, participating status
 def prepare_LN_snapshot(average_transaction_amount):
     # prepare a PCN according to our model based on a snapshot of the Lightning Network
 
     machine = input('running on server or laptop?\n')
 
     if machine == 'laptop':
-        # Read graph object in Python pickle format.   
+        # Read graph object in Python pickle format.
         snapshot = nx.read_gpickle('ln.gpickle')
 
         # Consider only components aka subgraphs with connected nodes e.g. for this case 48 components
@@ -194,7 +266,7 @@ def prepare_LN_snapshot(average_transaction_amount):
         LN = components[largest_comp_index_by_edges]
 
     else:
-        # read largest component json 
+        # read largest component json
         with open('LN-largest-cc.json', 'r') as handle:
             LN_dict = json.load(handle)
 
@@ -247,16 +319,16 @@ def prepare_LN_snapshot(average_transaction_amount):
 
     return topology
 
-
+# Creating transactions on a particular topology created from LN snapshot
 def transaction_lists_gen2(topology, number_of_unique_transactions, transaction_repetitions, tr_LB, tr_UB):
-    # creates num_of_transaction_lists lists of random transactions 
+    # creates num_of_transaction_lists lists of random transactions
     list_of_transactions = []
 
     # Drawing sources and destinations. Creating direction.
     # draw sources it means we deal only with 100 randomly chosen unique transactions from all the graph?
     sources = random.choices(list(topology.nodes), k=number_of_unique_transactions)
 
-    # draw destinations 
+    # draw destinations
     destinations = []
     for source in sources:
         destinations.append(random.choice([x for x in sources if x != source and (source, x) not in topology.edges]))
@@ -277,24 +349,10 @@ def transaction_lists_gen2(topology, number_of_unique_transactions, transaction_
 
     return list_of_transactions
 
-
-def append_to_A(d, r, c, data, row, col):
-    # append single items or lists to data, row, col 
-    if type(d) != list:
-        data.append(d)
-        row.append(r)
-        col.append(c)
-    else:
-        for i in range(len(d)):
-            data.append(d[i])
-            row.append(r[i])
-            col.append(c[i])
-
-
-# Hide & Seek skeleton
+# TODO Hide & Seek skeleton Plugin usage
 def hide_and_seek(topology, transaction_list, global_rebalancing_threshold, num_of_conc_cores):
-    # gloabal rebalancing LP 
-    # execute transaction until one of them is not possible, rebalance, continue carrying out transactions 
+    # global rebalancing LP
+    # execute transaction until one of them is not possible, rebalance, continue carrying out transactions
 
     successful_transactions = 0
     successful_volume = 0
@@ -304,7 +362,7 @@ def hide_and_seek(topology, transaction_list, global_rebalancing_threshold, num_
     trx_failed_twice = []
     total_number_of_rebalanced_edges = 0
 
-    # execute the transaction list 
+    # execute the transaction list (Is this for simulating the normal flow in LN?)
     for transaction in transaction_list:
         successful_transaction, failed_at_channel, topology = execute_transaction(topology, transaction)
 
@@ -312,11 +370,12 @@ def hide_and_seek(topology, transaction_list, global_rebalancing_threshold, num_
             successful_transactions += 1
             successful_volume += transaction[2]
 
+        # So execute rebalancing only on failed transaction channels?
         else:
             stacked_transactions.append(transaction)
             channels_where_trx_failed.append(failed_at_channel)
 
-            # rebalance every global_rebalancing_threshold stacked transactions
+            # TODO Plugin usage rebalance every global_rebalancing_threshold stacked transactions
             if len(stacked_transactions) == global_rebalancing_threshold:
                 # update pc states with respect to rebalancing
                 topology = update_pc_states(topology)
@@ -324,7 +383,7 @@ def hide_and_seek(topology, transaction_list, global_rebalancing_threshold, num_
                 # define rebalancing graph, as a non-linked copy of topology subgraph of topology
                 rebalancing_graph = HS_rebalancing_graph(topology, channels_where_trx_failed)
 
-                # compute flow updates 
+                # compute flow updates
                 flow_updates = LP_global_rebalancing(rebalancing_graph, num_of_conc_cores)
 
                 number_of_rebalanced_channels = sum([1 for s, d, flow in flow_updates if flow != 0])
@@ -334,7 +393,7 @@ def hide_and_seek(topology, transaction_list, global_rebalancing_threshold, num_
                 for u, v, flow in flow_updates:
                     topology = channel_update(topology, u, v, flow)
 
-                # try to execute the stacked transactions, put the failed ones in another list 
+                # try to execute the stacked transactions, put the failed ones in another list
                 for transaction in stacked_transactions:
                     successful_transaction, failed_at_channel, topology = execute_transaction(topology, transaction)
 
@@ -353,9 +412,76 @@ def hide_and_seek(topology, transaction_list, global_rebalancing_threshold, num_
 
     return successful_transactions, successful_volume, len(trx_failed_twice), len(trx_failed_twice)
 
+# TODO be clarified PLUGIN
+def execute_transaction(topology, transaction):
+    # execute a single transaction
+    source, destination, amount = transaction
+    successful_transaction = True
+    failed_at_channel = False
 
+    # Сompute shortest path according to weights with a help of networkx library
+    shortest_path = nx.shortest_path(topology, source, destination, weight='weight')
+    shortest_path_edges = [(shortest_path[i], shortest_path[i + 1]) for i in range(len(shortest_path) - 1)]
+
+    # I don't get why should here .reverse be used.
+    shortest_path_edges.reverse()
+
+    # compute routing fees backwards and check if the capacities suffice
+    stacked_payments = []
+    current_edge = shortest_path_edges.pop()
+    hop, nexthop = current_edge
+    current_amount = amount
+    current_fee = topology[hop][nexthop]['base_fee'] + topology[hop][nexthop]['relative_fee'] * current_amount
+
+    # Execute only if transaction amount is smaller than overall capacity
+    if topology[hop][nexthop]['satoshis'] > current_amount:
+        # if the last edge in the path has enough capacity, proceed to checking the previous ones
+        stacked_payments.append((hop, nexthop, current_amount))
+
+        # repeat backwards for the remaining edges
+        while shortest_path_edges:
+
+            hop, nexthop = shortest_path_edges.pop()
+            current_amount += current_fee
+            current_fee = topology[hop][nexthop]['base_fee'] + topology[hop][nexthop]['relative_fee'] * current_amount
+
+            if topology[hop][nexthop]['satoshis'] > current_amount:
+                stacked_payments.append((hop, nexthop, current_amount))
+            else:
+                successful_transaction = False
+                failed_at_channel = (hop, nexthop, amount)
+                break
+    else:
+        successful_transaction = False
+        failed_at_channel = (hop, nexthop, amount)
+
+    # if the transaction can be carried out, execute the transaction
+    if successful_transaction:
+        while stacked_payments:
+            (src, dst, trx) = stacked_payments.pop()
+            topology = channel_update(topology, src, dst, trx)
+
+    return successful_transaction, failed_at_channel, topology
+
+# TODO Plugin usage Change the channel states, PLUGIN as RPC call to change states in implementation
+def channel_update(topology, from_node, to_node, amount):
+    topology[from_node][to_node]['satoshis'] -= amount
+    topology[to_node][from_node]['satoshis'] += amount
+
+    return topology
+
+# TODO PLUGIN usage
+def update_pc_states(topology):
+    # updates pc state with respect to rebalancing intention
+    for channel in topology.edges:
+        u, v = channel
+        topology[u][v]['state'] = pc_state(topology, channel)
+
+    return topology
+
+# TODO Plugin usage
 def HS_rebalancing_graph(topology, channels_where_trx_failed):
-    # constructs rebalancing graph for Hide & Seek 
+    # constructs rebalancing graph for Hide & Seek
     rebalancing_graph = nx.DiGraph()
 
     # rebalancing amount (?)
@@ -368,7 +494,7 @@ def HS_rebalancing_graph(topology, channels_where_trx_failed):
     rebalancing_graph_edges = [(u, v) for u, v in topology.edges if topology[u][v]['state'] != 'not participating']
     rebalancing_graph.add_edges_from(rebalancing_graph_edges, flow_bound=max_flow)
 
-    # if a transaction failed at (src,dst), set 0 flow to this direction and let max_flow in the reverse 
+    # if a transaction failed at (src,dst), set 0 flow to this direction and let max_flow in the reverse
     for src, dst, val in channels_where_trx_failed:
         rebalancing_graph[src][dst]['flow_bound'] = 0
         rebalancing_graph[dst][src]['objective function coefficient'] = 1
@@ -379,14 +505,14 @@ def HS_rebalancing_graph(topology, channels_where_trx_failed):
             rebalancing_graph[u][v]['objective function coefficient'] = 1
             rebalancing_graph[u][v]['flow_bound'] = 0
 
-        # adjust flow bounds if they exceed a preset limit 
+        # adjust flow bounds if they exceed a preset limit
         if rebalancing_graph[u][v]['flow_bound'] > topology[u][v]['satoshis'] / 2:
             rebalancing_graph[u][v]['flow_bound'] = topology[u][v]['satoshis'] / 2
 
     # rebalancing_channels = {(u,v) for u,v in topology.edges if topology[u][v]['state'] != 'not participating'}
     # rebalancing_channels -= set(channels_where_trx_failed)
 
-    # # add channels and their intended rebalancing amounts. 
+    # # add channels and their intended rebalancing amounts.
     # rebalancing_graph = topology.edge_subgraph(rebalancing_channels).copy()
 
     # for channel in rebalancing_graph.edges:
@@ -397,55 +523,16 @@ def HS_rebalancing_graph(topology, channels_where_trx_failed):
     #     u,v = channel
     #     rebalancing_graph.add_edge(u,v)
 
-    #     # optimally, the amount of flow through (u,v) should be the satoshis needed such that (v,u), 
+    #     # optimally, the amount of flow through (u,v) should be the satoshis needed such that (v,u),
     #     # the channel to be refunded, returns to its initial balance
     #     rebalancing_graph[u][v]['max flow'] = topology[v][u]['initial balance'] - topology[v][u]['satoshis']
 
     return rebalancing_graph
 
-
-def compute_costraint_1a(edge_index):
-    # -f(u,v) <= 0
-    return (-1, edge_index, edge_index)
-
-
-def compute_costraint_1b(args):
-    # f(u,v) <= m(u,v)
-    m, edge_index = args
-    return (1, m + edge_index, edge_index)
-
-
-def compute_costraint_2(args):
-    n, m, node_index = args
-
-    u = list_of_nodes[node_index]
-
-    tuples = []
-
-    for edge in topology.out_edges(u):
-        edge_index = list_of_edges.index(edge)
-
-        # ineq 2a: \sum_{out edges} f(u,v)
-        tuples.append((1, 2 * m + node_index, edge_index))
-
-        # ineq 2b: - \sum_{out edges} f(u,v)
-        tuples.append((-1, 2 * m + n + node_index, edge_index))
-
-    for edge in topology.in_edges(u):
-        edge_index = list_of_edges.index(edge)
-
-        # ineq 2a: - \sum_{in edges} f(v,u)
-        tuples.append((-1, 2 * m + node_index, edge_index))
-
-        # ineq 2b: \sum_{in edges} f(v,u)
-        tuples.append((1, 2 * m + n + node_index, edge_index))
-
-    return tuples
-
-
+# TODO Plugin usage
 def LP_global_rebalancing(rebalancing_graph, num_of_conc_cores):
-    # gloabal rebalancing LP 
-    # same structure as https://www.gurobi.com/documentation/9.1/quickstart_mac/cs_example_matrix1_py.html 
+    # gloabal rebalancing LP
+    # same structure as https://www.gurobi.com/documentation/9.1/quickstart_mac/cs_example_matrix1_py.html
 
     last_time = time.time()
 
@@ -466,7 +553,7 @@ def LP_global_rebalancing(rebalancing_graph, num_of_conc_cores):
         # Set objective
         obj = np.zeros(m, dtype=float)
 
-        # only channels where transactions failed contribute to the objective function 
+        # only channels where transactions failed contribute to the objective function
         for edge_index in range(m):
             u, v = list_of_edges[edge_index]
             if 'objective function coefficient' in rebalancing_graph[u][v]:
@@ -475,7 +562,7 @@ def LP_global_rebalancing(rebalancing_graph, num_of_conc_cores):
         model.setObjective(obj @ x, GRB.MAXIMIZE)
 
         ## adding constraints
-        # init 
+        # init
         data = []
         row = []
         col = []
@@ -489,27 +576,27 @@ def LP_global_rebalancing(rebalancing_graph, num_of_conc_cores):
 
         #     # -f(u,v) <= 0
         #     append_to_A(-1, edge_index, edge_index, data, row, col)
-        #     # bound is zero, so no need to edit rhs 
-        #     # rhs[edge_index] = 0  
+        #     # bound is zero, so no need to edit rhs
+        #     # rhs[edge_index] = 0
 
         #     # f(u,v) <= m(u,v)
         #     append_to_A(1, m + edge_index, edge_index, data, row, col)
         #     rhs[m + edge_index] = rebalancing_graph[u][v]['flow_bound']
 
-        # parallel code 
+        # parallel code
         # 1a: -f(u,v) <= 0
         inputs_1a = range(m)
         with concurrent.futures.ProcessPoolExecutor(max_workers=num_of_conc_cores) as executor:
-            results_1a = executor.map(compute_costraint_1a, inputs_1a)  # results is a generator object 
+            results_1a = executor.map(compute_costraint_1a, inputs_1a)  # results is a generator object
 
         # 1b: f(u,v) <= m(u,v)
         inputs_1b = [(m, edge_index) for edge_index in range(m)]
         with concurrent.futures.ProcessPoolExecutor(max_workers=num_of_conc_cores) as executor:
-            results_1b = executor.map(compute_costraint_1b, inputs_1b)  # results is a generator object         
+            results_1b = executor.map(compute_costraint_1b, inputs_1b)  # results is a generator object
 
-        all_entries = [result for result in results_1a] + [result for result in results_1b]  # unpack generator         
+        all_entries = [result for result in results_1a] + [result for result in results_1b]  # unpack generator
 
-        # set bound vector 
+        # set bound vector
         for edge_index in range(m):
             u, v = list_of_edges[edge_index]
             rhs[m + edge_index] = rebalancing_graph[u][v]['flow_bound']
@@ -517,18 +604,18 @@ def LP_global_rebalancing(rebalancing_graph, num_of_conc_cores):
         print(f'done with constraint 1 in {duration_since(last_time)}')
         last_time = time.time()
 
-        # constraint 2: flow conservation: sum of in flows = some of out flows  
-        # ineq 2a: \sum_{out edges} f(u,v) - \sum_{in edges} f(v,u) <= 0 
-        # ineq 2b: \sum_{in edges} f(v,u) - \sum_{out edges} f(u,v) <= 0         
-        # bounds (rhs vector) are already set to zero from initialization 
-        # sequeantial code 
+        # constraint 2: flow conservation: sum of in flows = some of out flows
+        # ineq 2a: \sum_{out edges} f(u,v) - \sum_{in edges} f(v,u) <= 0
+        # ineq 2b: \sum_{in edges} f(v,u) - \sum_{out edges} f(u,v) <= 0
+        # bounds (rhs vector) are already set to zero from initialization
+        # sequeantial code
         # for i in range(n):
-        #     # all bounds are zero, thus no need to edit rhs 
+        #     # all bounds are zero, thus no need to edit rhs
 
         #     u = list_of_nodes[i]
 
         #     for edge in rebalancing_graph.out_edges(u):
-        #         edge_index = list_of_edges.index(edge)      
+        #         edge_index = list_of_edges.index(edge)
 
         #         # ineq 2a: \sum_{out edges} f(u,v)
         #         append_to_A(1, 2*m + i, edge_index, data, row, col)
@@ -537,18 +624,18 @@ def LP_global_rebalancing(rebalancing_graph, num_of_conc_cores):
         #         append_to_A(-1, 2*m + n + i, edge_index, data, row, col)
 
         #     for edge in rebalancing_graph.in_edges(u):
-        #         edge_index = list_of_edges.index(edge)                
+        #         edge_index = list_of_edges.index(edge)
 
         #         # ineq 2a: - \sum_{in edges} f(v,u)
         #         append_to_A(-1, 2*m + i, edge_index, data, row, col)
 
         #         # ineq 2b: \sum_{in edges} f(v,u)
-        #         append_to_A(1, 2*m + n + i, edge_index, data, row, col)                
+        #         append_to_A(1, 2*m + n + i, edge_index, data, row, col)
 
         # parallel code
         inputs_2 = [(n, m, node_index) for node_index in range(n)]
         with concurrent.futures.ProcessPoolExecutor(max_workers=num_of_conc_cores) as executor:
-            results_1b = executor.map(compute_costraint_2, inputs_2)  # results is a generator object   
+            results_1b = executor.map(compute_costraint_2, inputs_2)  # results is a generator object
 
         print('done with constraint 2')
 
@@ -569,7 +656,7 @@ def LP_global_rebalancing(rebalancing_graph, num_of_conc_cores):
 
             flows = x.X
         except:
-            # infeasible model, set all flows to zero 
+            # infeasible model, set all flows to zero
             print('model is infeasible, setting all flows to zero')
             flows = list(np.zeros(m, dtype=int))
 
@@ -589,150 +676,64 @@ def LP_global_rebalancing(rebalancing_graph, num_of_conc_cores):
     except AttributeError:
         print('Encountered an attribute error')
 
+# TODO Plugin usage (not sure) LP usage (so not needed in par representation?)
+def append_to_A(d, r, c, data, row, col):
+    # append single items or lists to data, row, col
+    if type(d) != list:
+        data.append(d)
+        row.append(r)
+        col.append(c)
+    else:
+        for i in range(len(d)):
+            data.append(d[i])
+            row.append(r[i])
+            col.append(c[i])
 
-def find_cycles(topology, source, destination, number_of_cycles):
-    # returns at most number_of_cycles-many cycles of size at least 3 that end with channel 
-    # (source,destination) should be the last edge of the cycle
-    # uses BFS discovery 
+# TODO Plugin usage, constraints for LP.
+def compute_costraint_1a(edge_index):
+    # -f(u,v) <= 0
+    return (-1, edge_index, edge_index)
 
-    BFS_tree = nx.DiGraph()
+# TODO Plugin usage, constraints for LP.
+def compute_costraint_1b(args):
+    # f(u,v) <= m(u,v)
+    m, edge_index = args
+    return (1, m + edge_index, edge_index)
 
-    distance_k_nodes = {0: [destination]}
-    visited = [source, destination]
+# TODO Plugin usage, constraints for LP.
+def compute_costraint_2(args):
+    n, m, node_index = args
 
-    cycles = []
-    distance_from_origin = 1
-    max_depth_of_BFS = 10
+    u = list_of_nodes[node_index]
 
-    while len(cycles) <= number_of_cycles and distance_from_origin < max_depth_of_BFS:
-        # find distance_from_origin nodes
-        distance_k_nodes[distance_from_origin] = []
+    tuples = []
 
-        for node in distance_k_nodes[distance_from_origin - 1]:
-            for new_node in [e[1] for e in topology.out_edges(node) if e[1] not in visited]:
-                # add to topology
-                BFS_tree.add_edge(node, new_node)
+    for edge in topology.out_edges(u):
+        edge_index = list_of_edges.index(edge)
 
-                visited.append(new_node)
+        # ineq 2a: \sum_{out edges} f(u,v)
+        tuples.append((1, 2 * m + node_index, edge_index))
 
-                # check for cycles
-                if (new_node, source) in topology.edges:
-                    new_cycle = nx.shortest_path(BFS_tree, destination, new_node) + [source]
-                    cycles.append(new_cycle)
+        # ineq 2b: - \sum_{out edges} f(u,v)
+        tuples.append((-1, 2 * m + n + node_index, edge_index))
 
-        distance_from_origin += 1
+        for edge in topology.in_edges(u):
+            edge_index = list_of_edges.index(edge)
 
-    return cycles[:number_of_cycles]
+        # ineq 2a: - \sum_{in edges} f(v,u)
+        tuples.append((-1, 2 * m + node_index, edge_index))
 
+        # ineq 2b: \sum_{in edges} f(v,u)
+        tuples.append((1, 2 * m + n + node_index, edge_index))
 
-# CIRCULAR REBALANCING local is the same as circular rebalancing?
-def LN_local_rebalancing(topology, transaction_list, max_rebalancings_per_transaction, cycle_search_cutoff):
-    # LN local rebalancing by cycle finding 
-
-    # init success counters 
-    successful_transactions = 0
-    successful_volume = 0
-    number_of_rebalanced_edges = 0
-    rebalance_stats = {(i + 1): 0 for i in range(max_rebalancings_per_transaction)}
-
-    # execute as many transactions as possible 
-    for transaction in transaction_list:
-        src, dst, trx = transaction
-
-        successful_transaction, failed_at_channel, topology = execute_transaction(topology, transaction)
-
-        # if not successful, try to rebalance 
-        rebalancings = 0
-        cycle_pool = []
-        cycle_pool_empty = False
-
-        while not successful_transaction and rebalancings < max_rebalancings_per_transaction and not cycle_pool_empty:
-            # info of channel where the transaction failed 
-            x, y, fwd_amount = failed_at_channel
-
-            # find cycles that include the reversed failed channel 
-            if not cycle_pool:
-                cycle_pool = find_cycles(topology, y, x, cycle_search_cutoff)
-
-                # if no cycle exists, break
-                if not cycle_pool:
-                    print(f'No cycles found! deg({x}) = {topology.degree[x]}')
-                    break
-                else:
-                    cycle_pool_empty = False
-
-            # rebalance        
-            cycle = cycle_pool.pop()
-
-            # true after the last cycle was poped 
-            if not cycle_pool:
-                cycle_pool_empty = True
-
-            channels_in_cycle = [(cycle[i], cycle[(i + 1) % len(cycle)]) for i in range(len(cycle))]
-
-            # if the initial balance is not enough to cover the forwarded amount, break 
-            if topology[x][y]['initial balance'] < fwd_amount:
-                print("Transaction infeasible: initial balance doesn't suffice")
-                break
-
-            # rebalancing should restore the initial balance in channel (x,y)
-            rebalancing_amount = topology[x][y]['initial balance'] - topology[x][y]['satoshis']
-
-            # execute rebalancing if the first cycle has enough capacity 
-            topology, rebalancing_successful = rebalance(topology, cycle, rebalancing_amount)
-
-            # check if the transaction can succeed 
-            if rebalancing_successful:
-                print('Rebalancing succeeded!')
-                number_of_rebalanced_edges += len(channels_in_cycle)
-                rebalancings += 1
-                rebalance_stats[rebalancings] += 1
-
-                successful_transaction, new_failed_at_channel, topology = execute_transaction(topology, transaction)
-
-                # if the transaction failed at a new channel, recompute the cycle pool 
-                if failed_at_channel != new_failed_at_channel:
-                    cycle_pool = []
-                    failed_at_channel = new_failed_at_channel
-            else:
-                print('Rebalancing failed!')
-
-        # if the transaction was successful (with or without rebalancing), update the output 
-        if successful_transaction:
-            successful_transactions += 1
-            successful_volume += transaction[2]
-
-            # print rebalancing statistics
-    rebalancing_stats_str = ''
-    for reb in rebalance_stats:
-        rebalancing_stats_str += f'Channels rebalanced {reb} time(s): {rebalance_stats[reb]}. '
-    print(f'rebalancing statistics: {rebalancing_stats_str}')
-
-    return successful_transactions, successful_volume, number_of_rebalanced_edges
+        return tuples
 
 
-# NO REBALANCING      
-def no_rebalancing(topology, transaction_list):
-    # do all transactions that are possible 
-
-    successful_transactions = 0
-    successful_volume = 0
-
-    for transaction in transaction_list:
-        successful_transaction, failed_at_channel, topology = execute_transaction(topology, transaction)
-
-        if successful_transaction:
-            successful_transactions += 1
-            successful_volume += transaction[2]
-
-    return successful_transactions, successful_volume
-
+global rebalancing_graph
 
 # record start time
 start_time = time.time()
 last_time = start_time
-
-global rebalancing_graph
 
 # bottom 11 initial capacities of existing snapshot: [220.0, 275.0, 300.0, 400.0, 500.0, 550.0, 666.0, 825.0, 880.0, 1000.0, 1200.0]
 # Low and upper bounds of all capacities
@@ -745,7 +746,7 @@ average_transaction_amount = np.floor((tr_UB - tr_LB) / 2)
 topology = prepare_LN_snapshot(average_transaction_amount)
 initial_topology = copy.deepcopy(topology)
 
-# set up the input and experiment parameters 
+# set up the input and experiment parameters
 number_of_unique_transactions = 100
 transaction_repetitions = [10, 12, 14, 16]
 # transaction_repetitions = [2, 4, 6, 8, 10]
@@ -774,7 +775,7 @@ post(f'logging results for {global_rebalancing_threshold} stacked transaction fo
 # create transaction lists
 transaction_lists = transaction_lists_gen2(topology, number_of_unique_transactions, transaction_repetitions, tr_LB, tr_UB)
 
-# init results dict 
+# init results dict
 results = {i: {'no rebalancing': {}, 'LN local': {}, 'Hide & Seek': {}} for i in range(number_of_transaction_lists)}
 methods_used = ['no rebalancing', 'LN local', 'Hide & Seek']
 
@@ -785,7 +786,7 @@ else:
     trx_lists_ids = [str(i) for i in range(number_of_transaction_lists)]
 
 if compute_new_results:
-    # compute the results for each method and list of transactions 
+    # compute the results for each method and list of transactions
     for i in range(number_of_transaction_lists):
         total_num_trans = len(transaction_lists[i])
         total_volume = sum([transaction[2] for transaction in transaction_lists[i]])
@@ -813,7 +814,7 @@ if compute_new_results:
                 print(
                     f'Hide & Seek: for {transaction_repetitions[i]} repetitions, success ratio = {succ_trans / total_num_trans}, success volume ratio = {succ_vol / total_volume}, and number of transactions that failed twice = {trx_failed_twice}')
 
-            # store results for plotting 
+            # store results for plotting
             results[i][method]['successful_transactions'] = succ_trans / total_num_trans
             results[i][method]['successful_volume'] = succ_vol / total_volume
 
@@ -842,7 +843,7 @@ else:
 
 
 ## plot the results
-# success ratio plot 
+# success ratio plot
 for method in methods_used:
     success_tr_ratios = [results[i][method]['successful_transactions'] for i in trx_lists_ids]
     # success_vol_ratios = [results[i][method]['successful_volume'] for i in range(number_of_transaction_lists)]
