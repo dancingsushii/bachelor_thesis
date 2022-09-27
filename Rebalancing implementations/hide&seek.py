@@ -349,10 +349,9 @@ def transaction_lists_gen2(topology, number_of_unique_transactions, transaction_
 
     return list_of_transactions
 
-# TODO Hide & Seek skeleton Plugin usage
+# TODO Hide & Seek skeleton Plugin usage,
+#  Execute transaction until one of them is not possible, rebalance, continue carrying out transactions
 def hide_and_seek(topology, transaction_list, global_rebalancing_threshold, num_of_conc_cores):
-    # global rebalancing LP
-    # execute transaction until one of them is not possible, rebalance, continue carrying out transactions
 
     successful_transactions = 0
     successful_volume = 0
@@ -360,7 +359,6 @@ def hide_and_seek(topology, transaction_list, global_rebalancing_threshold, num_
     # channels_to_rebalance = []
     channels_where_trx_failed = []
     trx_failed_twice = []
-    total_number_of_rebalanced_edges = 0
 
     # execute the transaction list (Is this for simulating the normal flow in LN?)
     for transaction in transaction_list:
@@ -373,11 +371,14 @@ def hide_and_seek(topology, transaction_list, global_rebalancing_threshold, num_
         # So execute rebalancing only on failed transaction channels?
         else:
             stacked_transactions.append(transaction)
+
+            # The list of channels where transaction failed
             channels_where_trx_failed.append(failed_at_channel)
 
-            # TODO Plugin usage rebalance every global_rebalancing_threshold stacked transactions
+            # TODO Plugin usage rebalance every global_rebalancing_threshold stacked transactions,
+            # so we start to rebalance only if threshold is reached
             if len(stacked_transactions) == global_rebalancing_threshold:
-                # update pc states with respect to rebalancing
+                # update pc states with respect to rebalancing aka check who is still willing to participate in Hide & Seek
                 topology = update_pc_states(topology)
 
                 # define rebalancing graph, as a non-linked copy of topology subgraph of topology
