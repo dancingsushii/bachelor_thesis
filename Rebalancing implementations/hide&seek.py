@@ -408,77 +408,10 @@ def hide_and_seek(topology, transaction_list, global_rebalancing_threshold, num_
                 post(
                     f'number of rebalanced channels: {number_of_rebalanced_channels}, total flow on participating channels: {total_flow_on_depleted_channels}')
 
-                # clear stacked transactions to run other transation
+                # clear stacked transactions to run other transaction
                 stacked_transactions = []
 
     return successful_transactions, successful_volume, len(trx_failed_twice), len(trx_failed_twice)
-
-# TODO be clarified PLUGIN
-def execute_transaction(topology, transaction):
-    # execute a single transaction
-    source, destination, amount = transaction
-    successful_transaction = True
-    failed_at_channel = False
-
-    # Сompute shortest path according to weights with a help of networkx library
-    shortest_path = nx.shortest_path(topology, source, destination, weight='weight')
-    shortest_path_edges = [(shortest_path[i], shortest_path[i + 1]) for i in range(len(shortest_path) - 1)]
-
-    # I don't get why should here .reverse be used.
-    shortest_path_edges.reverse()
-
-    # compute routing fees backwards and check if the capacities suffice
-    stacked_payments = []
-    current_edge = shortest_path_edges.pop()
-    hop, nexthop = current_edge
-    current_amount = amount
-    current_fee = topology[hop][nexthop]['base_fee'] + topology[hop][nexthop]['relative_fee'] * current_amount
-
-    # Execute only if transaction amount is smaller than overall capacity
-    if topology[hop][nexthop]['satoshis'] > current_amount:
-        # if the last edge in the path has enough capacity, proceed to checking the previous ones
-        stacked_payments.append((hop, nexthop, current_amount))
-
-        # repeat backwards for the remaining edges
-        while shortest_path_edges:
-
-            hop, nexthop = shortest_path_edges.pop()
-            current_amount += current_fee
-            current_fee = topology[hop][nexthop]['base_fee'] + topology[hop][nexthop]['relative_fee'] * current_amount
-
-            if topology[hop][nexthop]['satoshis'] > current_amount:
-                stacked_payments.append((hop, nexthop, current_amount))
-            else:
-                successful_transaction = False
-                failed_at_channel = (hop, nexthop, amount)
-                break
-    else:
-        successful_transaction = False
-        failed_at_channel = (hop, nexthop, amount)
-
-    # if the transaction can be carried out, execute the transaction
-    if successful_transaction:
-        while stacked_payments:
-            (src, dst, trx) = stacked_payments.pop()
-            topology = channel_update(topology, src, dst, trx)
-
-    return successful_transaction, failed_at_channel, topology
-
-# TODO Plugin usage Change the channel states, PLUGIN as RPC call to change states in implementation
-def channel_update(topology, from_node, to_node, amount):
-    topology[from_node][to_node]['satoshis'] -= amount
-    topology[to_node][from_node]['satoshis'] += amount
-
-    return topology
-
-# TODO PLUGIN usage
-def update_pc_states(topology):
-    # updates pc state with respect to rebalancing intention
-    for channel in topology.edges:
-        u, v = channel
-        topology[u][v]['state'] = pc_state(topology, channel)
-
-    return topology
 
 # TODO Plugin usage
 def HS_rebalancing_graph(topology, channels_where_trx_failed):
@@ -486,11 +419,12 @@ def HS_rebalancing_graph(topology, channels_where_trx_failed):
     rebalancing_graph = nx.DiGraph()
 
     # rebalancing amount (?)
-    # if max, then assume MPC
+    # if max, then assume MPC Why assume MPC if max?
     max_flow = max(
         {topology[x][y]['initial balance'] - topology[x][y]['satoshis'] for x, y, z in channels_where_trx_failed})
     print(f'm(u,v) variables set to {max_flow}')
 
+    # Consider only those edges whose nodes are in "participating" state
     # setup channels and maximum flow_bound
     rebalancing_graph_edges = [(u, v) for u, v in topology.edges if topology[u][v]['state'] != 'not participating']
     rebalancing_graph.add_edges_from(rebalancing_graph_edges, flow_bound=max_flow)
@@ -500,7 +434,8 @@ def HS_rebalancing_graph(topology, channels_where_trx_failed):
         rebalancing_graph[src][dst]['flow_bound'] = 0
         rebalancing_graph[dst][src]['objective function coefficient'] = 1
 
-        # set objective function coefficients
+    # set objective function coefficients
+    # we are never here bcs state== 'depleted' is commented out
     for u, v in topology.edges:
         if topology[u][v]['state'] == 'depleted':
             rebalancing_graph[u][v]['objective function coefficient'] = 1
@@ -532,7 +467,7 @@ def HS_rebalancing_graph(topology, channels_where_trx_failed):
 
 # TODO Plugin usage
 def LP_global_rebalancing(rebalancing_graph, num_of_conc_cores):
-    # gloabal rebalancing LP
+    # global rebalancing LP
     # same structure as https://www.gurobi.com/documentation/9.1/quickstart_mac/cs_example_matrix1_py.html
 
     last_time = time.time()
@@ -728,6 +663,73 @@ def compute_costraint_2(args):
         tuples.append((1, 2 * m + n + node_index, edge_index))
 
         return tuples
+
+# TODO be clarified PLUGIN
+def execute_transaction(topology, transaction):
+    # execute a single transaction
+    source, destination, amount = transaction
+    successful_transaction = True
+    failed_at_channel = False
+
+    # Сompute shortest path according to weights with a help of networkx library
+    shortest_path = nx.shortest_path(topology, source, destination, weight='weight')
+    shortest_path_edges = [(shortest_path[i], shortest_path[i + 1]) for i in range(len(shortest_path) - 1)]
+
+    # I don't get why should here .reverse be used.
+    shortest_path_edges.reverse()
+
+    # compute routing fees backwards and check if the capacities suffice
+    stacked_payments = []
+    current_edge = shortest_path_edges.pop()
+    hop, nexthop = current_edge
+    current_amount = amount
+    current_fee = topology[hop][nexthop]['base_fee'] + topology[hop][nexthop]['relative_fee'] * current_amount
+
+    # Execute only if transaction amount is smaller than overall capacity
+    if topology[hop][nexthop]['satoshis'] > current_amount:
+        # if the last edge in the path has enough capacity, proceed to checking the previous ones
+        stacked_payments.append((hop, nexthop, current_amount))
+
+        # repeat backwards for the remaining edges
+        while shortest_path_edges:
+
+            hop, nexthop = shortest_path_edges.pop()
+            current_amount += current_fee
+            current_fee = topology[hop][nexthop]['base_fee'] + topology[hop][nexthop]['relative_fee'] * current_amount
+
+            if topology[hop][nexthop]['satoshis'] > current_amount:
+                stacked_payments.append((hop, nexthop, current_amount))
+            else:
+                successful_transaction = False
+                failed_at_channel = (hop, nexthop, amount)
+                break
+    else:
+        successful_transaction = False
+        failed_at_channel = (hop, nexthop, amount)
+
+    # if the transaction can be carried out, execute the transaction
+    if successful_transaction:
+        while stacked_payments:
+            (src, dst, trx) = stacked_payments.pop()
+            topology = channel_update(topology, src, dst, trx)
+
+    return successful_transaction, failed_at_channel, topology
+
+# TODO Plugin usage Change the channel states, PLUGIN as RPC call to change states in implementation
+def channel_update(topology, from_node, to_node, amount):
+    topology[from_node][to_node]['satoshis'] -= amount
+    topology[to_node][from_node]['satoshis'] += amount
+
+    return topology
+
+# TODO PLUGIN usage
+def update_pc_states(topology):
+    # updates pc state with respect to rebalancing intention
+    for channel in topology.edges:
+        u, v = channel
+        topology[u][v]['state'] = pc_state(topology, channel)
+
+    return topology
 
 
 global rebalancing_graph
