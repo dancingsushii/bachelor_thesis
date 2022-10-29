@@ -61,3 +61,8 @@ https://bitcointalk.org/index.php?topic=5395925.0
 https://jlopp.github.io/bitcoin-core-config-generator/#config=eyJjaGFpbiI6eyJjaGFpbiI6InRlc3QifX0=
 
 https://medium.com/@retprogramisto/how-to-install-a-pruned-bitcoin-full-node-on-ubuntu-vps-2b81fe170ddf
+
+## Found rebalancing LN plugins (only for C-Lightning)
+1. Main [rebalance plugin](https://github.com/lightningd/plugins/tree/master/rebalance) curated by CLN community. Circular rebalance method, local
+2. [Plugin](https://github.com/giovannizotta/circular). Circular rebalance, local.
+
