@@ -20,6 +20,392 @@ import networkx as nx
 # module provides a high-level interface for asynchronously executing callables.
 import concurrent.futures
 
+# TODO Hide & Seek skeleton Plugin usage,
+#  Execute transaction until one of them is not possible, rebalance, continue carrying out transactions
+def hide_and_seek(topology, transaction_list, global_rebalancing_threshold, num_of_conc_cores):
+
+    successful_transactions = 0
+    successful_volume = 0
+    stacked_transactions = []
+    # channels_to_rebalance = []
+    channels_where_trx_failed = []
+    trx_failed_twice = []
+
+    # execute the transaction list (Is this for simulating the normal flow in LN?)
+    for transaction in transaction_list:
+        successful_transaction, failed_at_channel, topology = execute_transaction(topology, transaction)
+
+        if successful_transaction:
+            successful_transactions += 1
+            successful_volume += transaction[2]
+
+        # So execute rebalancing only on failed transaction channels?
+        else:
+            stacked_transactions.append(transaction)
+
+            # The list of channels where transaction failed
+            channels_where_trx_failed.append(failed_at_channel)
+
+            # TODO Plugin usage rebalance every global_rebalancing_threshold stacked transactions,
+            # so we start to rebalance only if threshold is reached
+            if len(stacked_transactions) == global_rebalancing_threshold:
+                # update pc states with respect to rebalancing aka check who is still willing to participate in Hide & Seek
+                # Check who wants to participate
+                topology = update_pc_states(topology)
+
+                # define rebalancing graph, as a non-linked copy of topology subgraph of topology
+                # Here is an entry point for Hide & Seek and for MPC computation
+                rebalancing_graph = HS_rebalancing_graph(topology, channels_where_trx_failed)
+
+                # compute flow updates
+                flow_updates = LP_global_rebalancing(rebalancing_graph, num_of_conc_cores)
+
+                number_of_rebalanced_channels = sum([1 for s, d, flow in flow_updates if flow != 0])
+                total_flow_on_depleted_channels = sum([flow for s, d, flow in flow_updates])
+
+                # apply flow through (u,v) equiv to adding flow to (v,u)
+                for u, v, flow in flow_updates:
+                    topology = channel_update(topology, u, v, flow)
+
+                # try to execute the stacked transactions, put the failed ones in another list
+                for transaction in stacked_transactions:
+                    successful_transaction, failed_at_channel, topology = execute_transaction(topology, transaction)
+
+                    if successful_transaction:
+                        successful_transactions += 1
+                        successful_volume += transaction[2]
+
+                    else:
+                        trx_failed_twice.append(transaction)
+
+                post(
+                    f'number of rebalanced channels: {number_of_rebalanced_channels}, total flow on participating channels: {total_flow_on_depleted_channels}')
+
+                # clear stacked transactions to run other transaction
+                stacked_transactions = []
+
+    return successful_transactions, successful_volume, len(trx_failed_twice), len(trx_failed_twice)
+
+# TODO Plugin usage
+def HS_rebalancing_graph(topology, channels_where_trx_failed):
+    # constructs rebalancing graph for Hide & Seek
+    rebalancing_graph = nx.DiGraph()
+
+    # rebalancing amount (?)
+    # if max, then assume MPC Why assume MPC if max?
+    max_flow = max(
+        {topology[x][y]['initial balance'] - topology[x][y]['satoshis'] for x, y, z in channels_where_trx_failed})
+    print(f'm(u,v) variables set to {max_flow}')
+
+    # Consider only those edges whose nodes are in "participating" state
+    # setup channels and maximum flow_bound
+    rebalancing_graph_edges = [(u, v) for u, v in topology.edges if topology[u][v]['state'] != 'not participating']
+    rebalancing_graph.add_edges_from(rebalancing_graph_edges, flow_bound=max_flow)
+
+    # if a transaction failed at (src,dst), set 0 flow to this direction and let max_flow in the reverse
+    for src, dst, val in channels_where_trx_failed:
+        rebalancing_graph[src][dst]['flow_bound'] = 0
+        rebalancing_graph[dst][src]['objective function coefficient'] = 1
+
+    # set objective function coefficients
+    # we are never here bcs state== 'depleted' is commented out
+    for u, v in topology.edges:
+        if topology[u][v]['state'] == 'depleted':
+            rebalancing_graph[u][v]['objective function coefficient'] = 1
+            rebalancing_graph[u][v]['flow_bound'] = 0
+
+        # adjust flow bounds if they exceed a preset limit
+        if rebalancing_graph[u][v]['flow_bound'] > topology[u][v]['satoshis'] / 2:
+            rebalancing_graph[u][v]['flow_bound'] = topology[u][v]['satoshis'] / 2
+
+    # rebalancing_channels = {(u,v) for u,v in topology.edges if topology[u][v]['state'] != 'not participating'}
+    # rebalancing_channels -= set(channels_where_trx_failed)
+
+    # # add channels and their intended rebalancing amounts.
+    # rebalancing_graph = topology.edge_subgraph(rebalancing_channels).copy()
+
+    # for channel in rebalancing_graph.edges:
+    #     u,v = channel
+    #     rebalancing_graph[u][v]['flow_bound'] = topology[v][u]['initial balance'] - topology[v][u]['satoshis']
+
+    # for channel in channels_where_trx_failed:
+    #     u,v = channel
+    #     rebalancing_graph.add_edge(u,v)
+
+    #     # optimally, the amount of flow through (u,v) should be the satoshis needed such that (v,u),
+    #     # the channel to be refunded, returns to its initial balance
+    #     rebalancing_graph[u][v]['max flow'] = topology[v][u]['initial balance'] - topology[v][u]['satoshis']
+
+    return rebalancing_graph
+
+# TODO Plugin usage, Problem that
+def LP_global_rebalancing(rebalancing_graph, num_of_conc_cores):
+    # global rebalancing LP
+    # same structure as https://www.gurobi.com/documentation/9.1/quickstart_mac/cs_example_matrix1_py.html
+
+    last_time = time.time()
+
+    try:
+        n = rebalancing_graph.number_of_nodes()
+
+        # number of edges of a NODE?
+        m = rebalancing_graph.number_of_edges()
+        global list_of_nodes
+        global list_of_edges
+        list_of_nodes = list(rebalancing_graph.nodes)
+        list_of_edges = list(rebalancing_graph.edges)
+
+        # Create a new model
+        model = gp.Model("rebalancing-LP")
+
+        # Create variables
+        x = model.addMVar(shape=m, vtype=GRB.CONTINUOUS, name="x")
+
+        # Set objective
+        obj = np.zeros(m, dtype=float)
+
+        # only channels where transactions failed contribute to the objective function
+        for edge_index in range(m):
+            u, v = list_of_edges[edge_index]
+            if 'objective function coefficient' in rebalancing_graph[u][v]:
+                obj[edge_index] = rebalancing_graph[u][v]['objective function coefficient']
+
+        model.setObjective(obj @ x, GRB.MAXIMIZE)
+
+        ## adding constraints
+        # init
+        data = []
+        row = []
+        col = []
+        rhs = np.zeros(2 * m + 2 * n)
+
+        # constraint 1: respecting capacities: 0 <= f(u,v) <= m(u,v)
+        # I.e. -f(u,v) <= 0 and f(u,v) <= m(u,v)
+        # sequential code
+        # for edge_index in range(m):
+        #     u,v = list_of_edges[edge_index]
+
+        #     # -f(u,v) <= 0
+        #     append_to_A(-1, edge_index, edge_index, data, row, col)
+        #     # bound is zero, so no need to edit rhs
+        #     # rhs[edge_index] = 0
+
+        #     # f(u,v) <= m(u,v)
+        #     append_to_A(1, m + edge_index, edge_index, data, row, col)
+        #     rhs[m + edge_index] = rebalancing_graph[u][v]['flow_bound']
+
+        # parallel code
+        # 1a: -f(u,v) <= 0
+        inputs_1a = range(m)
+        with concurrent.futures.ProcessPoolExecutor(max_workers=num_of_conc_cores) as executor:
+            results_1a = executor.map(compute_costraint_1a, inputs_1a)  # results is a generator object
+
+        # 1b: f(u,v) <= m(u,v)
+        inputs_1b = [(m, edge_index) for edge_index in range(m)]
+        with concurrent.futures.ProcessPoolExecutor(max_workers=num_of_conc_cores) as executor:
+            results_1b = executor.map(compute_costraint_1b, inputs_1b)  # results is a generator object
+
+        all_entries = [result for result in results_1a] + [result for result in results_1b]  # unpack generator
+
+        # set bound vector
+        for edge_index in range(m):
+            u, v = list_of_edges[edge_index]
+            rhs[m + edge_index] = rebalancing_graph[u][v]['flow_bound']
+
+        print(f'done with constraint 1 in {duration_since(last_time)}')
+        last_time = time.time()
+
+        # constraint 2: flow conservation: sum of in flows = some of out flows
+        # ineq 2a: \sum_{out edges} f(u,v) - \sum_{in edges} f(v,u) <= 0
+        # ineq 2b: \sum_{in edges} f(v,u) - \sum_{out edges} f(u,v) <= 0
+        # bounds (rhs vector) are already set to zero from initialization
+        # sequeantial code
+        # for i in range(n):
+        #     # all bounds are zero, thus no need to edit rhs
+
+        #     u = list_of_nodes[i]
+
+        #     for edge in rebalancing_graph.out_edges(u):
+        #         edge_index = list_of_edges.index(edge)
+
+        #         # ineq 2a: \sum_{out edges} f(u,v)
+        #         append_to_A(1, 2*m + i, edge_index, data, row, col)
+
+        #         # ineq 2b: - \sum_{out edges} f(u,v)
+        #         append_to_A(-1, 2*m + n + i, edge_index, data, row, col)
+
+        #     for edge in rebalancing_graph.in_edges(u):
+        #         edge_index = list_of_edges.index(edge)
+
+        #         # ineq 2a: - \sum_{in edges} f(v,u)
+        #         append_to_A(-1, 2*m + i, edge_index, data, row, col)
+
+        #         # ineq 2b: \sum_{in edges} f(v,u)
+        #         append_to_A(1, 2*m + n + i, edge_index, data, row, col)
+
+        # parallel code
+        inputs_2 = [(n, m, node_index) for node_index in range(n)]
+        with concurrent.futures.ProcessPoolExecutor(max_workers=num_of_conc_cores) as executor:
+            results_1b = executor.map(compute_costraint_2, inputs_2)  # results is a generator object
+
+        print('done with constraint 2')
+
+        A_num_of_rows = 2 * m + 2 * n
+        A_num_of_columns = m
+
+        A = sp.csr_matrix((data, (row, col)), shape=(A_num_of_rows, A_num_of_columns))
+
+        # Add constraints
+        model.addConstr(A @ x <= rhs, name="matrix form constraints")
+
+        # Optimize model
+        model.optimize()
+
+        try:
+            print(x.X)
+            print(f'Obj: {model.objVal}')
+
+            flows = x.X
+        except:
+            # infeasible model, set all flows to zero
+            print('model is infeasible, setting all flows to zero')
+            flows = list(np.zeros(m, dtype=int))
+
+        balance_updates = []
+
+        # flow updates
+        for edge_index in range(m):
+            u, v = list_of_edges[edge_index]
+            balance_updates.append((u, v, int(flows[edge_index])))
+            # print(f'flow({u},{v}) = {int(flows[edge_index])}')
+
+        return balance_updates
+
+    except gp.GurobiError as e:
+        print('Error code ' + str(e.errno) + ": " + str(e))
+
+    except AttributeError:
+        print('Encountered an attribute error')
+
+# TODO Plugin usage (not sure) LP usage (so not needed in par representation?)
+def append_to_A(d, r, c, data, row, col):
+    # append single items or lists to data, row, col
+    if type(d) != list:
+        data.append(d)
+        row.append(r)
+        col.append(c)
+    else:
+        for i in range(len(d)):
+            data.append(d[i])
+            row.append(r[i])
+            col.append(c[i])
+
+# TODO Plugin usage, constraints for LP.
+def compute_costraint_1a(edge_index):
+    # -f(u,v) <= 0
+    return (-1, edge_index, edge_index)
+
+# TODO Plugin usage, constraints for LP.
+def compute_costraint_1b(args):
+    # f(u,v) <= m(u,v)
+    m, edge_index = args
+    return (1, m + edge_index, edge_index)
+
+# TODO Plugin usage, constraints for LP.
+def compute_costraint_2(args):
+    n, m, node_index = args
+
+    u = list_of_nodes[node_index]
+
+    tuples = []
+
+    for edge in topology.out_edges(u):
+        edge_index = list_of_edges.index(edge)
+
+        # ineq 2a: \sum_{out edges} f(u,v)
+        tuples.append((1, 2 * m + node_index, edge_index))
+
+        # ineq 2b: - \sum_{out edges} f(u,v)
+        tuples.append((-1, 2 * m + n + node_index, edge_index))
+
+        for edge in topology.in_edges(u):
+            edge_index = list_of_edges.index(edge)
+
+        # ineq 2a: - \sum_{in edges} f(v,u)
+        tuples.append((-1, 2 * m + node_index, edge_index))
+
+        # ineq 2b: \sum_{in edges} f(v,u)
+        tuples.append((1, 2 * m + n + node_index, edge_index))
+
+        return tuples
+
+# TODO be clarified PLUGIN
+def execute_transaction(topology, transaction):
+    # execute a single transaction
+    source, destination, amount = transaction
+    successful_transaction = True
+    failed_at_channel = False
+
+    # Сompute shortest path according to weights with a help of networkx library
+    shortest_path = nx.shortest_path(topology, source, destination, weight='weight')
+    shortest_path_edges = [(shortest_path[i], shortest_path[i + 1]) for i in range(len(shortest_path) - 1)]
+
+    # I don't get why should here .reverse be used.
+    shortest_path_edges.reverse()
+
+    # compute routing fees backwards and check if the capacities suffice
+    stacked_payments = []
+    current_edge = shortest_path_edges.pop()
+    hop, nexthop = current_edge
+    current_amount = amount
+    current_fee = topology[hop][nexthop]['base_fee'] + topology[hop][nexthop]['relative_fee'] * current_amount
+
+    # Execute only if transaction amount is smaller than overall capacity
+    if topology[hop][nexthop]['satoshis'] > current_amount:
+        # if the last edge in the path has enough capacity, proceed to checking the previous ones
+        stacked_payments.append((hop, nexthop, current_amount))
+
+        # repeat backwards for the remaining edges
+        while shortest_path_edges:
+
+            hop, nexthop = shortest_path_edges.pop()
+            current_amount += current_fee
+            current_fee = topology[hop][nexthop]['base_fee'] + topology[hop][nexthop]['relative_fee'] * current_amount
+
+            if topology[hop][nexthop]['satoshis'] > current_amount:
+                stacked_payments.append((hop, nexthop, current_amount))
+            else:
+                successful_transaction = False
+                failed_at_channel = (hop, nexthop, amount)
+                break
+    else:
+        successful_transaction = False
+        failed_at_channel = (hop, nexthop, amount)
+
+    # if the transaction can be carried out, execute the transaction
+    if successful_transaction:
+        while stacked_payments:
+            (src, dst, trx) = stacked_payments.pop()
+            topology = channel_update(topology, src, dst, trx)
+
+    return successful_transaction, failed_at_channel, topology
+
+# TODO Plugin usage Change the channel states, PLUGIN as RPC call to change states in implementation
+def channel_update(topology, from_node, to_node, amount):
+    topology[from_node][to_node]['satoshis'] -= amount
+    topology[to_node][from_node]['satoshis'] += amount
+
+    return topology
+
+# TODO PLUGIN usage
+def update_pc_states(topology):
+    # updates pc state with respect to rebalancing intention
+    for channel in topology.edges:
+        u, v = channel
+        topology[u][v]['state'] = pc_state(topology, channel)
+
+    return topology
+
 # For time evaluation of experiment
 def duration_since(last_time):
     delta = time.time() - last_time  # duration in seconds
@@ -348,388 +734,6 @@ def transaction_lists_gen2(topology, number_of_unique_transactions, transaction_
         list_of_transactions.append(new_list)
 
     return list_of_transactions
-
-# TODO Hide & Seek skeleton Plugin usage,
-#  Execute transaction until one of them is not possible, rebalance, continue carrying out transactions
-def hide_and_seek(topology, transaction_list, global_rebalancing_threshold, num_of_conc_cores):
-
-    successful_transactions = 0
-    successful_volume = 0
-    stacked_transactions = []
-    # channels_to_rebalance = []
-    channels_where_trx_failed = []
-    trx_failed_twice = []
-
-    # execute the transaction list (Is this for simulating the normal flow in LN?)
-    for transaction in transaction_list:
-        successful_transaction, failed_at_channel, topology = execute_transaction(topology, transaction)
-
-        if successful_transaction:
-            successful_transactions += 1
-            successful_volume += transaction[2]
-
-        # So execute rebalancing only on failed transaction channels?
-        else:
-            stacked_transactions.append(transaction)
-
-            # The list of channels where transaction failed
-            channels_where_trx_failed.append(failed_at_channel)
-
-            # TODO Plugin usage rebalance every global_rebalancing_threshold stacked transactions,
-            # so we start to rebalance only if threshold is reached
-            if len(stacked_transactions) == global_rebalancing_threshold:
-                # update pc states with respect to rebalancing aka check who is still willing to participate in Hide & Seek
-                topology = update_pc_states(topology)
-
-                # define rebalancing graph, as a non-linked copy of topology subgraph of topology
-                rebalancing_graph = HS_rebalancing_graph(topology, channels_where_trx_failed)
-
-                # compute flow updates
-                flow_updates = LP_global_rebalancing(rebalancing_graph, num_of_conc_cores)
-
-                number_of_rebalanced_channels = sum([1 for s, d, flow in flow_updates if flow != 0])
-                total_flow_on_depleted_channels = sum([flow for s, d, flow in flow_updates])
-
-                # apply flow through (u,v) equiv to adding flow to (v,u)
-                for u, v, flow in flow_updates:
-                    topology = channel_update(topology, u, v, flow)
-
-                # try to execute the stacked transactions, put the failed ones in another list
-                for transaction in stacked_transactions:
-                    successful_transaction, failed_at_channel, topology = execute_transaction(topology, transaction)
-
-                    if successful_transaction:
-                        successful_transactions += 1
-                        successful_volume += transaction[2]
-
-                    else:
-                        trx_failed_twice.append(transaction)
-
-                post(
-                    f'number of rebalanced channels: {number_of_rebalanced_channels}, total flow on participating channels: {total_flow_on_depleted_channels}')
-
-                # clear stacked transactions to run other transaction
-                stacked_transactions = []
-
-    return successful_transactions, successful_volume, len(trx_failed_twice), len(trx_failed_twice)
-
-# TODO Plugin usage
-def HS_rebalancing_graph(topology, channels_where_trx_failed):
-    # constructs rebalancing graph for Hide & Seek
-    rebalancing_graph = nx.DiGraph()
-
-    # rebalancing amount (?)
-    # if max, then assume MPC Why assume MPC if max?
-    max_flow = max(
-        {topology[x][y]['initial balance'] - topology[x][y]['satoshis'] for x, y, z in channels_where_trx_failed})
-    print(f'm(u,v) variables set to {max_flow}')
-
-    # Consider only those edges whose nodes are in "participating" state
-    # setup channels and maximum flow_bound
-    rebalancing_graph_edges = [(u, v) for u, v in topology.edges if topology[u][v]['state'] != 'not participating']
-    rebalancing_graph.add_edges_from(rebalancing_graph_edges, flow_bound=max_flow)
-
-    # if a transaction failed at (src,dst), set 0 flow to this direction and let max_flow in the reverse
-    for src, dst, val in channels_where_trx_failed:
-        rebalancing_graph[src][dst]['flow_bound'] = 0
-        rebalancing_graph[dst][src]['objective function coefficient'] = 1
-
-    # set objective function coefficients
-    # we are never here bcs state== 'depleted' is commented out
-    for u, v in topology.edges:
-        if topology[u][v]['state'] == 'depleted':
-            rebalancing_graph[u][v]['objective function coefficient'] = 1
-            rebalancing_graph[u][v]['flow_bound'] = 0
-
-        # adjust flow bounds if they exceed a preset limit
-        if rebalancing_graph[u][v]['flow_bound'] > topology[u][v]['satoshis'] / 2:
-            rebalancing_graph[u][v]['flow_bound'] = topology[u][v]['satoshis'] / 2
-
-    # rebalancing_channels = {(u,v) for u,v in topology.edges if topology[u][v]['state'] != 'not participating'}
-    # rebalancing_channels -= set(channels_where_trx_failed)
-
-    # # add channels and their intended rebalancing amounts.
-    # rebalancing_graph = topology.edge_subgraph(rebalancing_channels).copy()
-
-    # for channel in rebalancing_graph.edges:
-    #     u,v = channel
-    #     rebalancing_graph[u][v]['flow_bound'] = topology[v][u]['initial balance'] - topology[v][u]['satoshis']
-
-    # for channel in channels_where_trx_failed:
-    #     u,v = channel
-    #     rebalancing_graph.add_edge(u,v)
-
-    #     # optimally, the amount of flow through (u,v) should be the satoshis needed such that (v,u),
-    #     # the channel to be refunded, returns to its initial balance
-    #     rebalancing_graph[u][v]['max flow'] = topology[v][u]['initial balance'] - topology[v][u]['satoshis']
-
-    return rebalancing_graph
-
-# TODO Plugin usage
-def LP_global_rebalancing(rebalancing_graph, num_of_conc_cores):
-    # global rebalancing LP
-    # same structure as https://www.gurobi.com/documentation/9.1/quickstart_mac/cs_example_matrix1_py.html
-
-    last_time = time.time()
-
-    try:
-        n = rebalancing_graph.number_of_nodes()
-        m = rebalancing_graph.number_of_edges()
-        global list_of_nodes
-        global list_of_edges
-        list_of_nodes = list(rebalancing_graph.nodes)
-        list_of_edges = list(rebalancing_graph.edges)
-
-        # Create a new model
-        model = gp.Model("rebalancing-LP")
-
-        # Create variables
-        x = model.addMVar(shape=m, vtype=GRB.CONTINUOUS, name="x")
-
-        # Set objective
-        obj = np.zeros(m, dtype=float)
-
-        # only channels where transactions failed contribute to the objective function
-        for edge_index in range(m):
-            u, v = list_of_edges[edge_index]
-            if 'objective function coefficient' in rebalancing_graph[u][v]:
-                obj[edge_index] = rebalancing_graph[u][v]['objective function coefficient']
-
-        model.setObjective(obj @ x, GRB.MAXIMIZE)
-
-        ## adding constraints
-        # init
-        data = []
-        row = []
-        col = []
-        rhs = np.zeros(2 * m + 2 * n)
-
-        # constraint 1: respecting capacities: 0 <= f(u,v) <= m(u,v)
-        # I.e. -f(u,v) <= 0 and f(u,v) <= m(u,v)
-        # sequential code
-        # for edge_index in range(m):
-        #     u,v = list_of_edges[edge_index]
-
-        #     # -f(u,v) <= 0
-        #     append_to_A(-1, edge_index, edge_index, data, row, col)
-        #     # bound is zero, so no need to edit rhs
-        #     # rhs[edge_index] = 0
-
-        #     # f(u,v) <= m(u,v)
-        #     append_to_A(1, m + edge_index, edge_index, data, row, col)
-        #     rhs[m + edge_index] = rebalancing_graph[u][v]['flow_bound']
-
-        # parallel code
-        # 1a: -f(u,v) <= 0
-        inputs_1a = range(m)
-        with concurrent.futures.ProcessPoolExecutor(max_workers=num_of_conc_cores) as executor:
-            results_1a = executor.map(compute_costraint_1a, inputs_1a)  # results is a generator object
-
-        # 1b: f(u,v) <= m(u,v)
-        inputs_1b = [(m, edge_index) for edge_index in range(m)]
-        with concurrent.futures.ProcessPoolExecutor(max_workers=num_of_conc_cores) as executor:
-            results_1b = executor.map(compute_costraint_1b, inputs_1b)  # results is a generator object
-
-        all_entries = [result for result in results_1a] + [result for result in results_1b]  # unpack generator
-
-        # set bound vector
-        for edge_index in range(m):
-            u, v = list_of_edges[edge_index]
-            rhs[m + edge_index] = rebalancing_graph[u][v]['flow_bound']
-
-        print(f'done with constraint 1 in {duration_since(last_time)}')
-        last_time = time.time()
-
-        # constraint 2: flow conservation: sum of in flows = some of out flows
-        # ineq 2a: \sum_{out edges} f(u,v) - \sum_{in edges} f(v,u) <= 0
-        # ineq 2b: \sum_{in edges} f(v,u) - \sum_{out edges} f(u,v) <= 0
-        # bounds (rhs vector) are already set to zero from initialization
-        # sequeantial code
-        # for i in range(n):
-        #     # all bounds are zero, thus no need to edit rhs
-
-        #     u = list_of_nodes[i]
-
-        #     for edge in rebalancing_graph.out_edges(u):
-        #         edge_index = list_of_edges.index(edge)
-
-        #         # ineq 2a: \sum_{out edges} f(u,v)
-        #         append_to_A(1, 2*m + i, edge_index, data, row, col)
-
-        #         # ineq 2b: - \sum_{out edges} f(u,v)
-        #         append_to_A(-1, 2*m + n + i, edge_index, data, row, col)
-
-        #     for edge in rebalancing_graph.in_edges(u):
-        #         edge_index = list_of_edges.index(edge)
-
-        #         # ineq 2a: - \sum_{in edges} f(v,u)
-        #         append_to_A(-1, 2*m + i, edge_index, data, row, col)
-
-        #         # ineq 2b: \sum_{in edges} f(v,u)
-        #         append_to_A(1, 2*m + n + i, edge_index, data, row, col)
-
-        # parallel code
-        inputs_2 = [(n, m, node_index) for node_index in range(n)]
-        with concurrent.futures.ProcessPoolExecutor(max_workers=num_of_conc_cores) as executor:
-            results_1b = executor.map(compute_costraint_2, inputs_2)  # results is a generator object
-
-        print('done with constraint 2')
-
-        A_num_of_rows = 2 * m + 2 * n
-        A_num_of_columns = m
-
-        A = sp.csr_matrix((data, (row, col)), shape=(A_num_of_rows, A_num_of_columns))
-
-        # Add constraints
-        model.addConstr(A @ x <= rhs, name="matrix form constraints")
-
-        # Optimize model
-        model.optimize()
-
-        try:
-            print(x.X)
-            print(f'Obj: {model.objVal}')
-
-            flows = x.X
-        except:
-            # infeasible model, set all flows to zero
-            print('model is infeasible, setting all flows to zero')
-            flows = list(np.zeros(m, dtype=int))
-
-        balance_updates = []
-
-        # flow updates
-        for edge_index in range(m):
-            u, v = list_of_edges[edge_index]
-            balance_updates.append((u, v, int(flows[edge_index])))
-            # print(f'flow({u},{v}) = {int(flows[edge_index])}')
-
-        return balance_updates
-
-    except gp.GurobiError as e:
-        print('Error code ' + str(e.errno) + ": " + str(e))
-
-    except AttributeError:
-        print('Encountered an attribute error')
-
-# TODO Plugin usage (not sure) LP usage (so not needed in par representation?)
-def append_to_A(d, r, c, data, row, col):
-    # append single items or lists to data, row, col
-    if type(d) != list:
-        data.append(d)
-        row.append(r)
-        col.append(c)
-    else:
-        for i in range(len(d)):
-            data.append(d[i])
-            row.append(r[i])
-            col.append(c[i])
-
-# TODO Plugin usage, constraints for LP.
-def compute_costraint_1a(edge_index):
-    # -f(u,v) <= 0
-    return (-1, edge_index, edge_index)
-
-# TODO Plugin usage, constraints for LP.
-def compute_costraint_1b(args):
-    # f(u,v) <= m(u,v)
-    m, edge_index = args
-    return (1, m + edge_index, edge_index)
-
-# TODO Plugin usage, constraints for LP.
-def compute_costraint_2(args):
-    n, m, node_index = args
-
-    u = list_of_nodes[node_index]
-
-    tuples = []
-
-    for edge in topology.out_edges(u):
-        edge_index = list_of_edges.index(edge)
-
-        # ineq 2a: \sum_{out edges} f(u,v)
-        tuples.append((1, 2 * m + node_index, edge_index))
-
-        # ineq 2b: - \sum_{out edges} f(u,v)
-        tuples.append((-1, 2 * m + n + node_index, edge_index))
-
-        for edge in topology.in_edges(u):
-            edge_index = list_of_edges.index(edge)
-
-        # ineq 2a: - \sum_{in edges} f(v,u)
-        tuples.append((-1, 2 * m + node_index, edge_index))
-
-        # ineq 2b: \sum_{in edges} f(v,u)
-        tuples.append((1, 2 * m + n + node_index, edge_index))
-
-        return tuples
-
-# TODO be clarified PLUGIN
-def execute_transaction(topology, transaction):
-    # execute a single transaction
-    source, destination, amount = transaction
-    successful_transaction = True
-    failed_at_channel = False
-
-    # Сompute shortest path according to weights with a help of networkx library
-    shortest_path = nx.shortest_path(topology, source, destination, weight='weight')
-    shortest_path_edges = [(shortest_path[i], shortest_path[i + 1]) for i in range(len(shortest_path) - 1)]
-
-    # I don't get why should here .reverse be used.
-    shortest_path_edges.reverse()
-
-    # compute routing fees backwards and check if the capacities suffice
-    stacked_payments = []
-    current_edge = shortest_path_edges.pop()
-    hop, nexthop = current_edge
-    current_amount = amount
-    current_fee = topology[hop][nexthop]['base_fee'] + topology[hop][nexthop]['relative_fee'] * current_amount
-
-    # Execute only if transaction amount is smaller than overall capacity
-    if topology[hop][nexthop]['satoshis'] > current_amount:
-        # if the last edge in the path has enough capacity, proceed to checking the previous ones
-        stacked_payments.append((hop, nexthop, current_amount))
-
-        # repeat backwards for the remaining edges
-        while shortest_path_edges:
-
-            hop, nexthop = shortest_path_edges.pop()
-            current_amount += current_fee
-            current_fee = topology[hop][nexthop]['base_fee'] + topology[hop][nexthop]['relative_fee'] * current_amount
-
-            if topology[hop][nexthop]['satoshis'] > current_amount:
-                stacked_payments.append((hop, nexthop, current_amount))
-            else:
-                successful_transaction = False
-                failed_at_channel = (hop, nexthop, amount)
-                break
-    else:
-        successful_transaction = False
-        failed_at_channel = (hop, nexthop, amount)
-
-    # if the transaction can be carried out, execute the transaction
-    if successful_transaction:
-        while stacked_payments:
-            (src, dst, trx) = stacked_payments.pop()
-            topology = channel_update(topology, src, dst, trx)
-
-    return successful_transaction, failed_at_channel, topology
-
-# TODO Plugin usage Change the channel states, PLUGIN as RPC call to change states in implementation
-def channel_update(topology, from_node, to_node, amount):
-    topology[from_node][to_node]['satoshis'] -= amount
-    topology[to_node][from_node]['satoshis'] += amount
-
-    return topology
-
-# TODO PLUGIN usage
-def update_pc_states(topology):
-    # updates pc state with respect to rebalancing intention
-    for channel in topology.edges:
-        u, v = channel
-        topology[u][v]['state'] = pc_state(topology, channel)
-
-    return topology
 
 
 global rebalancing_graph

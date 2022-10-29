@@ -1,16 +1,25 @@
 #!/usr/bin/env python3
+# Plugin libraries
 from pyln.client import Plugin, Millisatoshi, RpcError
 from threading import Thread, Lock
 from datetime import timedelta
 from functools import reduce
 import time
 import uuid
+from mpyc.runtime import mpc
+
+# H&S libraries
+# mathematical optimization software library for solving mixed-integer linear and quadratic optimization problems
+import gurobipy as gp
+from gurobipy import GRB
+import numpy as np
+import scipy.sparse as sp
+
+
+
 
 plugin = Plugin()
 plugin.rebalance_stop = False
-
-# Hide & Seek global variables
-global_rebalancing_threshold = 50
 
 
 # Plugin initialization
@@ -18,20 +27,19 @@ global_rebalancing_threshold = 50
 def init(options, configuration, plugin):
     plugin.log("Hide & Seek rebalancing plugin initialized")
 
-    # Collect all necessary information about current node
+    # The listconfigs RPC command to list all configuration options, or with config only a selection.
     config = plugin.rpc.listconfigs()
+
+    ## Collect all necessary information about current node
+    # Check Lock Time Verify
     plugin.cltv_final = config.get("cltv-final")
     plugin.fee_base = Millisatoshi(config.get("fee-base"))
     plugin.fee_ppm = config.get("fee-per-satoshi")
+
+    # TODO Maybe add other options needed
+    plugin.threshold = int(options.get("rebalancing-threshold"))
+
     plugin.mutex = Lock()
-
-    # Options are configurable parameters for rebalancing plugin e.g. max hops, msatfactor etc.
-    # plugin.maxhops = int(options.get("rebalance-maxhops"))
-    # plugin.msatfactor = float(options.get("rebalance-msatfactor"))
-    # plugin.erringnodes = int(options.get("rebalance-erringnodes"))
-    # plugin.getroute = getroute_switch(options.get("rebalance-getroute"))
-    # plugin.rebalanceall_msg = None
-
     plugin.log(f"Plugin rebalance initialized with {plugin.fee_base} base / {plugin.fee_ppm} ppm fee  "
                f"cltv_final:{plugin.cltv_final}  "
                # f"maxhops:{plugin.maxhops}  "
@@ -40,44 +48,8 @@ def init(options, configuration, plugin):
                # f"getroute:{plugin.getroute.__name__}  "
                )
 
-# TODO
-@plugin.method("rebalanceall")
-def rebalanceall(plugin: Plugin, min_amount: Millisatoshi = Millisatoshi("50000sat"), feeratio: float = 0.5):
-    """Rebalancing of all unbalanced channels of a node based on Hide & Seek protocol.
-
-    Default minimum rebalancable amount is _____ (50000) sat. Default feeratio = _._ (0.5), half of our node's default fee.
-    To be economical, it tries to fix the liquidity cheaper than it can be ruined by transaction forwards.
-    It may run for a long time (hours) in the background, but can be stopped with the rebalancestop method.
-
-    White paper can be found here:
-    https://arxiv.org/pdf/2110.08848.pdf
-    """
-
-    if plugin.mutex.locked():
-        return {"message": "Rebalance is already running, this may take a while. To stop it use the cli method 'rebalancestop'."}
-    channels = get_open_channels(plugin)
-
-    if len(channels) <= 1:
-        return {"message": "Error: Not enough open channels to rebalance anything"}
-
-    our = sum(ch["to_us_msat"] for ch in channels)
-    total = sum(ch["total_msat"] for ch in channels)
-    min_amount = Millisatoshi(min_amount)
-
-    if total - our < min_amount or our < min_amount:
-        return {"message": "Error: Not enough liquidity to rebalance anything"}
-
-    # param parsing ensure correct type
-    plugin.feeratio = float(feeratio)
-    plugin.min_amount = min_amount
-
-    # run the job
-    t = Thread(target=rebalanceall_thread, args=(plugin,))
-    t.start()
-    return {
-        "message": f"Rebalance started with min rebalancable amount: {plugin.min_amount}, feeratio: {plugin.feeratio}"}
-
-# TODO
+# TODO find out what is msatoshi, maxfeepercent, exemptfee
+#%
 @plugin.method("rebalance")
 def rebalance(plugin, outgoing_scid, incoming_scid, msatoshi: Millisatoshi = None,
               retry_for: int = 60, maxfeepercent: float = 0.5,
@@ -89,9 +61,10 @@ def rebalance(plugin, outgoing_scid, incoming_scid, msatoshi: Millisatoshi = Non
     """
     if msatoshi:
         msatoshi = Millisatoshi(msatoshi)
-    retry_for = int(retry_for)
-    maxfeepercent = float(maxfeepercent)
-    exemptfee = Millisatoshi(exemptfee)
+
+    # retry_for = int(retry_for)
+    # maxfeepercent = float(maxfeepercent)
+    # exemptfee = Millisatoshi(exemptfee)
     payload = {
         "outgoing_scid": outgoing_scid,
         "incoming_scid": incoming_scid,
@@ -110,84 +83,197 @@ def rebalance(plugin, outgoing_scid, incoming_scid, msatoshi: Millisatoshi = Non
     out_ours, out_total = amounts_from_scid(plugin, outgoing_scid)
     in_ours, in_total = amounts_from_scid(plugin, incoming_scid)
 
-    # If amount was not given, calculate a suitable 50/50 rebalance amount
-    if msatoshi is None:
-        msatoshi = calc_optimal_amount(out_ours, out_total, in_ours, in_total, payload)
-        plugin.log("Estimating optimal amount %s" % msatoshi)
+    # MPC input
+    secint = mpc.SecInt(16)
+
+    # Each party enters an input. That is number of peers and channels to these peers.
+    my_age = int(input('Enter your m and n: '))
+
+    # List with one secint per party
+    our_ages = mpc.input(secint(my_age))
+
 
     return s
 
-# TODO
-@plugin.method("rebalancestop")
-def rebalancestop(plugin: Plugin):
-    """It stops the ongoing rebalanceall.
-    """
-    if not plugin.mutex.locked():
-        if plugin.rebalanceall_msg is None:
-            return {"message": "No rebalance is running, nothing to stop."}
-        return {"message": f"No rebalance is running, nothing to stop. "
-                           f"Last 'rebalanceall' gave: {plugin.rebalanceall_msg}"}
-    plugin.rebalance_stop = True
-    plugin.mutex.acquire(blocking=True)
-    plugin.rebalance_stop = False
-    plugin.mutex.release()
-    return {"message": plugin.rebalanceall_msg}
 
-# TODO
-@plugin.method("rebalancereport")
-def rebalancereport(plugin: Plugin):
-    """Show information about rebalance
-    """
-    res = {}
-    res["rebalanceall_is_running"] = plugin.mutex.locked()
-    res["getroute_method"] = plugin.getroute.__name__
-    res["maxhops_threshold"] = plugin.maxhops
-    res["msatfactor"] = plugin.msatfactor
-    res["erringnodes_threshold"] = plugin.erringnodes
-    channels = get_open_channels(plugin)
-    health_percent = 0.0
-    if len(channels) > 1:
-        enough_liquidity = get_enough_liquidity_threshold(channels)
-        ideal_ratio = get_ideal_ratio(channels, enough_liquidity)
-        res["enough_liquidity_threshold"] = enough_liquidity
-        res["ideal_liquidity_ratio"] = f"{ideal_ratio * 100:.2f}%"
-        for ch in channels:
-            liquidity = liquidity_info(ch, enough_liquidity, ideal_ratio)
-            health_percent += health_score(liquidity) * int(ch["total_msat"])
-        health_percent /= int(sum(ch["total_msat"] for ch in channels))
-    else:
-        res["enough_liquidity_threshold"] = Millisatoshi(0)
-        res["ideal_liquidity_ratio"] = "0%"
-    res["liquidity_health"] = f"{health_percent:.2f}%"
-    invoices = plugin.rpc.listinvoices()['invoices']
-    rebalances = [i for i in invoices if i.get('status') == 'paid' and i.get('label').startswith("Rebalance")]
-    total_fee = Millisatoshi(0)
-    total_amount = Millisatoshi(0)
-    res["total_successful_rebalances"] = len(rebalances)
-    # pyln-client does not support the 'status' argument as yet
-    # pays = plugin.rpc.listpays(status="complete")["pays"]
-    pays = plugin.rpc.listpays()["pays"]
-    pays = [p for p in pays if p.get('status') == 'complete']
-    for r in rebalances:
+# Linear program to solve for finding rebalancing
+def LP_global_rebalancing(rebalancing_graph):
+
+    # last_time = time.time()
+
+    try:
+        # Number of connected to this node peers
+        # n = rebalancing_graph.number_of_nodes()
+        n = len(plugin.rpc.listpeers())
+
+        # Number of edges from this node. Careful with bidirectiona channels please!
+        # m = rebalancing_graph.number_of_edges()
+        m = len(plugin.rpc.listchannels())
+
+        # TBC
+        global list_of_nodes
+        global list_of_edges
+        # list_of_nodes = list(rebalancing_graph.nodes)
+        list_of_nodes = list(plugin.rpc.listpeers())
+        # list_of_edges = list(rebalancing_graph.edges)
+        list_of_edges = list(plugin.rpc.listchannels())
+
+        # Create a new model
+        model = gp.Model("rebalancing-LP")
+
+        # Create variables
+        x = model.addMVar(shape=m, vtype=GRB.CONTINUOUS, name="x")
+
+        # Set objective
+        obj = np.zeros(m, dtype=float)
+
+        # only channels where transactions failed contribute to the objective function
+        # Do not know how to translate this?
+        for edge_index in range(m):
+            u, v = list_of_edges[edge_index]
+            if 'objective function coefficient' in rebalancing_graph[u][v]:
+                obj[edge_index] = rebalancing_graph[u][v]['objective function coefficient']
+
+        model.setObjective(obj @ x, GRB.MAXIMIZE)
+
+        ## adding constraints
+        data = []
+        row = []
+        col = []
+        rhs = np.zeros(2 * m + 2 * n)
+
+        # constraint 1: respecting capacities: 0 <= f(u,v) <= m(u,v)
+        # I.e. -f(u,v) <= 0 and f(u,v) <= m(u,v)
+        # sequential code
+        for edge_index in range(m):
+            u,v = list_of_edges[edge_index]
+
+        #     # -f(u,v) <= 0
+            append_to_A(-1, edge_index, edge_index, data, row, col)
+        #     # bound is zero, so no need to edit rhs
+        #     # rhs[edge_index] = 0
+
+        #     # f(u,v) <= m(u,v)
+            append_to_A(1, m + edge_index, edge_index, data, row, col)
+            rhs[m + edge_index] = rebalancing_graph[u][v]['flow_bound']
+        print('done with constraint 1')
+
+        # parallel code
+        # 1a: -f(u,v) <= 0
+        # inputs_1a = range(m)
+        # with concurrent.futures.ProcessPoolExecutor(max_workers=num_of_conc_cores) as executor:
+            # results_1a = executor.map(compute_costraint_1a, inputs_1a)  # results is a generator object
+
+        # 1b: f(u,v) <= m(u,v)
+        # inputs_1b = [(m, edge_index) for edge_index in range(m)]
+        # with concurrent.futures.ProcessPoolExecutor(max_workers=num_of_conc_cores) as executor:
+            # results_1b = executor.map(compute_costraint_1b, inputs_1b)  # results is a generator object
+
+        # all_entries = [result for result in results_1a] + [result for result in results_1b]  # unpack generator
+
+        # set bound vector
+        # for edge_index in range(m):
+            # u, v = list_of_edges[edge_index]
+            # rhs[m + edge_index] = rebalancing_graph[u][v]['flow_bound']
+
+        # print(f'done with constraint 1 in {duration_since(last_time)}')
+        # last_time = time.time()
+
+        # constraint 2: flow conservation: sum of in flows = some of out flows
+        # ineq 2a: \sum_{out edges} f(u,v) - \sum_{in edges} f(v,u) <= 0
+        # ineq 2b: \sum_{in edges} f(v,u) - \sum_{out edges} f(u,v) <= 0
+        # bounds (rhs vector) are already set to zero from initialization
+        # sequential code
+        for i in range(n):
+        #     # all bounds are zero, thus no need to edit rhs
+
+             u = list_of_nodes[i]
+
+             for edge in rebalancing_graph.out_edges(u):
+                 edge_index = list_of_edges.index(edge)
+
+        #         # ineq 2a: \sum_{out edges} f(u,v)
+                 append_to_A(1, 2*m + i, edge_index, data, row, col)
+
+        #         # ineq 2b: - \sum_{out edges} f(u,v)
+                 append_to_A(-1, 2*m + n + i, edge_index, data, row, col)
+
+             for edge in rebalancing_graph.in_edges(u):
+                 edge_index = list_of_edges.index(edge)
+
+        #         # ineq 2a: - \sum_{in edges} f(v,u)
+                 append_to_A(-1, 2*m + i, edge_index, data, row, col)
+
+        #         # ineq 2b: \sum_{in edges} f(v,u)
+                 append_to_A(1, 2*m + n + i, edge_index, data, row, col)
+
+        # parallel code
+        # inputs_2 = [(n, m, node_index) for node_index in range(n)]
+        # with concurrent.futures.ProcessPoolExecutor(max_workers=num_of_conc_cores) as executor:
+            # results_1b = executor.map(compute_costraint_2, inputs_2)  # results is a generator object
+
+        print('done with constraint 2')
+
+        A_num_of_rows = 2 * m + 2 * n
+        A_num_of_columns = m
+
+        A = sp.csr_matrix((data, (row, col)), shape=(A_num_of_rows, A_num_of_columns))
+
+        # Add constraints
+        model.addConstr(A @ x <= rhs, name="matrix form constraints")
+
+        # Optimize model
+        model.optimize()
+
         try:
-            pay = next(p for p in pays if p["payment_hash"] == r["payment_hash"])
-            total_amount += pay["amount_msat"]
-            total_fee += pay["amount_sent_msat"] - pay["amount_msat"]
-        except Exception:
-            res["total_successful_rebalances"] -= 1
-    res["total_rebalanced_amount"] = total_amount
-    res["total_rebalance_fee"] = total_fee
-    if total_amount > Millisatoshi(0):
-        res["average_rebalance_fee_ppm"] = round(total_fee / total_amount * 10**6, 2)
+            print(x.X)
+            print(f'Obj: {model.objVal}')
+
+            flows = x.X
+        except:
+            # infeasible model, set all flows to zero
+            print('model is infeasible, setting all flows to zero')
+            flows = list(np.zeros(m, dtype=int))
+
+        balance_updates = []
+
+        # flow updates
+        for edge_index in range(m):
+            u, v = list_of_edges[edge_index]
+            balance_updates.append((u, v, int(flows[edge_index])))
+            # print(f'flow({u},{v}) = {int(flows[edge_index])}')
+
+        return balance_updates
+
+    except gp.GurobiError as e:
+        print('Error code ' + str(e.errno) + ": " + str(e))
+
+    except AttributeError:
+        print('Encountered an attribute error')
+
+
+# Helping method for LP solving
+def append_to_A(d, r, c, data, row, col):
+    # append single items or lists to data, row, col
+    if type(d) != list:
+        data.append(d)
+        row.append(r)
+        col.append(c)
     else:
-        res["average_rebalance_fee_ppm"] = 0
+        for i in range(len(d)):
+            data.append(d[i])
+            row.append(r[i])
+            col.append(c[i])
 
-    avg_forward_fees = get_avg_forward_fees(plugin, [1, 7, 30])
-    res['average_forward_fee_ppm_1d'] = avg_forward_fees[0]
-    res['average_forward_fee_ppm_7d'] = avg_forward_fees[1]
-    res['average_forward_fee_ppm_30d'] = avg_forward_fees[2]
 
-    return res
+# Method from plugin that returns peers from channel
+def peer_from_scid(plugin, short_channel_id, my_node_id, payload):
+    channels = plugin.rpc.listchannels(short_channel_id).get('channels')
+    for ch in channels:
+        if ch['source'] == my_node_id:
+            return ch['destination']
+    raise RpcError("rebalance", payload, {'message': 'Cannot find peer for channel: ' + short_channel_id})
+
 
 # Method for getting all peers of a node.
 def get_open_channels(plugin: Plugin):
@@ -198,43 +284,22 @@ def get_open_channels(plugin: Plugin):
                 channels.append(ch)
     return channels
 
-def rebalanceall_thread(plugin: Plugin):
-    if not plugin.mutex.acquire(blocking=False):
-        return
-    try:
-        start_ts = time.time()
 
-        feeadjuster_state = feeadjuster_toggle(plugin, False)
-
-        channels = get_open_channels(plugin)
-        plugin.enough_liquidity = get_enough_liquidity_threshold(channels)
-        plugin.ideal_ratio = get_ideal_ratio(channels, plugin.enough_liquidity)
-        plugin.log(f"Automatic rebalance is running with enough liquidity threshold: {plugin.enough_liquidity}, "
-                   f"ideal liquidity ratio: {plugin.ideal_ratio * 100:.2f}%, "
-                   f"min rebalancable amount: {plugin.min_amount}, "
-                   f"feeratio: {plugin.feeratio}")
-
-        failed_channels = []
-        success = 0
-        fee_spent = Millisatoshi(0)
-        while not plugin.rebalance_stop:
-            result = maybe_rebalance_once(plugin, failed_channels)
-            if not result["success"]:
-                break
-            success += 1
-            fee_spent += result["fee_spent"]
-        feeadjust_would_be_nice(plugin)
-        feeadjuster_toggle(plugin, feeadjuster_state)
-        elapsed_time = timedelta(seconds=time.time() - start_ts)
-        plugin.rebalanceall_msg = f"Automatic rebalance finished: {success} successful rebalance, {fee_spent} fee spent, it took {str(elapsed_time)[:-3]}"
-        plugin.log(plugin.rebalanceall_msg)
-    finally:
-        plugin.mutex.release()
+#plugin.add_option(
+#    'greeting',
+#    'This is a first implementation of a rebalancing plugin based on Hide & Seek protocol. '
+#    'You can find all preliminaries and theoretical background at https://arxiv.org/pdf/2110.08848.pdf'
+#)
 
 
-
+# # Hide & Seek global variables
+# global_rebalancing_threshold = 50
 plugin.add_option(
-    'This is a first implementation of a rebalancing plugin based on Hide & Seek protocol. '
-    'You can find all preliminaries and theoretical background at https://arxiv.org/pdf/2110.08848.pdf')
+    "rebalance-threshold",
+    "50",
+    "Global rebalancing threshold defined in the white paper"
+    "Note: review that one later.",
+    "string"
+)
 
 plugin.run()
