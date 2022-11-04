@@ -31,6 +31,13 @@ Report file system disk space usage. The `-h` flag provides human readable outpu
 ```
 df -h
 ```
+
+
+## Assumptions for experiments
+1. Free rebalancing (without fee)
+2. Every node in the ``regtest` is willing to participate
+3. MPC delegates are known for all other nodes (bcs we need their ip addresses in order to execute MPyC LP calculation)
+
 Listing open ports in use.
 
 ```
