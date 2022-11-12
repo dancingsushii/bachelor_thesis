@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 # Plugin libraries
-from pyln.client import Plugin, Millisatoshi, RpcError
-from threading import Thread, Lock
+# from pyln.client import Plugin, Millisatoshi, RpcError
+# from threading import Thread, Lock
 from datetime import timedelta
 from functools import reduce
 import time
 import uuid
+
 from mpyc.runtime import mpc
 
 # H&S libraries
@@ -16,7 +17,29 @@ import numpy as np
 import scipy.sparse as sp
 
 
+# That is how I understand it now:
+# K Step 1: one node calls rebalanceall and starts to collect information about neighbours via sending them custom message: https://lightning.readthedocs.io/lightning-sendcustommsg.7.html
+# K Step 2: Following objective 50/50 function decisionMaker,
+    #  bcs we rely on sendcustommsg each of the participants discovers information about other nodes not in recursive way but in TODO way
+# K Step 3: All data are packed and then is put together for input in *mocked MPC* for node initiator
+# T Step 4: Initiator node receives data as a graph node ids, channels (v, u, m(v, u))
+# T Step 5: Executes LP on that graph (need a license be deployed)
+# T Step 6: Cycle decomposition
+# K Step 7: Send instructions to other nodes 7.1 iterate through transaction list aka u -> v n satoshi via x channel
+#                                         OR 7.2 (big amount of nodes causes flooding)
 
+# K & T Step 8: Try to build interface for execution of received transaction on each node
+# Step 9: Rebalancing is done after some time when all transactions are executed
+
+
+# Parameters to consider:
+    # 1) total amount of generated transactions
+    # 2) time needed for generated transactions
+
+# Metrics:
+    # success ratio = succ_trans / total_num_trans
+    # success volume ratio = succ_vol / total_volume
+    # duration time
 
 plugin = Plugin()
 plugin.rebalance_stop = False
@@ -49,9 +72,8 @@ def init(options, configuration, plugin):
                )
 
 # TODO find out what is msatoshi, maxfeepercent, exemptfee
-#%
-@plugin.method("rebalance")
-def rebalance(plugin, outgoing_scid, incoming_scid, msatoshi: Millisatoshi = None,
+@plugin.method("rebalanceall")
+def rebalanceall(plugin, msatoshi: Millisatoshi = None,
               retry_for: int = 60, maxfeepercent: float = 0.5,
               exemptfee: Millisatoshi = Millisatoshi(5000)):
     """Rebalancing of one particular channel of a node based on Hide & Seek protocol.
@@ -65,23 +87,23 @@ def rebalance(plugin, outgoing_scid, incoming_scid, msatoshi: Millisatoshi = Non
     # retry_for = int(retry_for)
     # maxfeepercent = float(maxfeepercent)
     # exemptfee = Millisatoshi(exemptfee)
-    payload = {
-        "outgoing_scid": outgoing_scid,
-        "incoming_scid": incoming_scid,
-        "msatoshi": msatoshi,
-        "retry_for": retry_for,
-        "maxfeepercent": maxfeepercent,
-        "exemptfee": exemptfee
-    }
+    # payload = {
+    #     "outgoing_scid": outgoing_scid,
+    #     "incoming_scid": incoming_scid,
+    #     "msatoshi": msatoshi,
+    #     "retry_for": retry_for,
+    #     "maxfeepercent": maxfeepercent,
+    #     "exemptfee": exemptfee
+    # }
 
     # here are the rpc instructions
-    my_node_id = plugin.rpc.getinfo().get('id')
-    outgoing_node_id = peer_from_scid(plugin, outgoing_scid, my_node_id, payload)
-    incoming_node_id = peer_from_scid(plugin, incoming_scid, my_node_id, payload)
-    get_channel(plugin, payload, outgoing_node_id, outgoing_scid, True)
-    get_channel(plugin, payload, incoming_node_id, incoming_scid, True)
-    out_ours, out_total = amounts_from_scid(plugin, outgoing_scid)
-    in_ours, in_total = amounts_from_scid(plugin, incoming_scid)
+    # my_node_id = plugin.rpc.getinfo().get('id')
+    # outgoing_node_id = peer_from_scid(plugin, outgoing_scid, my_node_id, payload)
+    # incoming_node_id = peer_from_scid(plugin, incoming_scid, my_node_id, payload)
+    # get_channel(plugin, payload, outgoing_node_id, outgoing_scid, True)
+    # get_channel(plugin, payload, incoming_node_id, incoming_scid, True)
+    # out_ours, out_total = amounts_from_scid(plugin, outgoing_scid)
+    # in_ours, in_total = amounts_from_scid(plugin, incoming_scid)
 
     # MPC input
     secint = mpc.SecInt(16)
@@ -97,46 +119,39 @@ def rebalance(plugin, outgoing_scid, incoming_scid, msatoshi: Millisatoshi = Non
 
 
 # Linear program to solve for finding rebalancing
+# Meaning that rebalancing graph is the graph containing nodes and channels who reported willingness to rebalance
+# node ids, channels (v, u, m(v, u))
 def LP_global_rebalancing(rebalancing_graph):
 
-    # last_time = time.time()
-
     try:
-        # Number of connected to this node peers
-        # n = rebalancing_graph.number_of_nodes()
-        n = len(plugin.rpc.listpeers())
+        n = rebalancing_graph.number_of_nodes()
+        m = rebalancing_graph.number_of_edges()
 
-        # Number of edges from this node. Careful with bidirectiona channels please!
-        # m = rebalancing_graph.number_of_edges()
-        m = len(plugin.rpc.listchannels())
-
-        # TBC
         global list_of_nodes
         global list_of_edges
-        # list_of_nodes = list(rebalancing_graph.nodes)
-        list_of_nodes = list(plugin.rpc.listpeers())
-        # list_of_edges = list(rebalancing_graph.edges)
-        list_of_edges = list(plugin.rpc.listchannels())
 
-        # Create a new model
+        list_of_nodes = list(rebalancing_graph.nodes)
+        list_of_edges = list(rebalancing_graph.edges)
+
+        # Create a new model, variables and set an objective
         model = gp.Model("rebalancing-LP")
-
-        # Create variables
         x = model.addMVar(shape=m, vtype=GRB.CONTINUOUS, name="x")
-
-        # Set objective
         obj = np.zeros(m, dtype=float)
 
         # only channels where transactions failed contribute to the objective function
-        # Do not know how to translate this?
+        # for edge_index in range(m):
+            # u, v = list_of_edges[edge_index]
+            # if 'objective function coefficient' in rebalancing_graph[u][v]:
+                # obj[edge_index] = rebalancing_graph[u][v]
+
         for edge_index in range(m):
             u, v = list_of_edges[edge_index]
-            if 'objective function coefficient' in rebalancing_graph[u][v]:
-                obj[edge_index] = rebalancing_graph[u][v]['objective function coefficient']
+            obj[edge_index] = rebalancing_graph[u][v]
 
         model.setObjective(obj @ x, GRB.MAXIMIZE)
 
         ## adding constraints
+        # init
         data = []
         row = []
         col = []
@@ -148,36 +163,22 @@ def LP_global_rebalancing(rebalancing_graph):
         for edge_index in range(m):
             u,v = list_of_edges[edge_index]
 
-        #     # -f(u,v) <= 0
+            # -f(u,v) <= 0
             append_to_A(-1, edge_index, edge_index, data, row, col)
-        #     # bound is zero, so no need to edit rhs
-        #     # rhs[edge_index] = 0
+            # bound is zero, so no need to edit rhs
+            # rhs[edge_index] = 0
 
-        #     # f(u,v) <= m(u,v)
+            # f(u,v) <= m(u,v)
             append_to_A(1, m + edge_index, edge_index, data, row, col)
             rhs[m + edge_index] = rebalancing_graph[u][v]['flow_bound']
-        print('done with constraint 1')
-
-        # parallel code
-        # 1a: -f(u,v) <= 0
-        # inputs_1a = range(m)
-        # with concurrent.futures.ProcessPoolExecutor(max_workers=num_of_conc_cores) as executor:
-            # results_1a = executor.map(compute_costraint_1a, inputs_1a)  # results is a generator object
-
-        # 1b: f(u,v) <= m(u,v)
-        # inputs_1b = [(m, edge_index) for edge_index in range(m)]
-        # with concurrent.futures.ProcessPoolExecutor(max_workers=num_of_conc_cores) as executor:
-            # results_1b = executor.map(compute_costraint_1b, inputs_1b)  # results is a generator object
-
-        # all_entries = [result for result in results_1a] + [result for result in results_1b]  # unpack generator
 
         # set bound vector
-        # for edge_index in range(m):
-            # u, v = list_of_edges[edge_index]
-            # rhs[m + edge_index] = rebalancing_graph[u][v]['flow_bound']
+        for edge_index in range(m):
+            u, v = list_of_edges[edge_index]
+            rhs[m + edge_index] = rebalancing_graph[u][v]['flow_bound']
 
-        # print(f'done with constraint 1 in {duration_since(last_time)}')
-        # last_time = time.time()
+        print(f'done with constraint 1')
+        last_time = time.time()
 
         # constraint 2: flow conservation: sum of in flows = some of out flows
         # ineq 2a: \sum_{out edges} f(u,v) - \sum_{in edges} f(v,u) <= 0
@@ -185,32 +186,28 @@ def LP_global_rebalancing(rebalancing_graph):
         # bounds (rhs vector) are already set to zero from initialization
         # sequential code
         for i in range(n):
-        #     # all bounds are zero, thus no need to edit rhs
+            # all bounds are zero, thus no need to edit rhs
 
-             u = list_of_nodes[i]
+            u = list_of_nodes[i]
 
-             for edge in rebalancing_graph.out_edges(u):
-                 edge_index = list_of_edges.index(edge)
+            for edge in rebalancing_graph.out_edges(u):
+                edge_index = list_of_edges.index(edge)
 
-        #         # ineq 2a: \sum_{out edges} f(u,v)
-                 append_to_A(1, 2*m + i, edge_index, data, row, col)
+                # ineq 2a: \sum_{out edges} f(u,v)
+                append_to_A(1, 2*m + i, edge_index, data, row, col)
 
-        #         # ineq 2b: - \sum_{out edges} f(u,v)
-                 append_to_A(-1, 2*m + n + i, edge_index, data, row, col)
+                # ineq 2b: - \sum_{out edges} f(u,v)
+                append_to_A(-1, 2*m + n + i, edge_index, data, row, col)
 
-             for edge in rebalancing_graph.in_edges(u):
-                 edge_index = list_of_edges.index(edge)
+            for edge in rebalancing_graph.in_edges(u):
+                edge_index = list_of_edges.index(edge)
 
-        #         # ineq 2a: - \sum_{in edges} f(v,u)
-                 append_to_A(-1, 2*m + i, edge_index, data, row, col)
+                # ineq 2a: - \sum_{in edges} f(v,u)
+                append_to_A(-1, 2*m + i, edge_index, data, row, col)
 
-        #         # ineq 2b: \sum_{in edges} f(v,u)
-                 append_to_A(1, 2*m + n + i, edge_index, data, row, col)
+                # ineq 2b: \sum_{in edges} f(v,u)
+                append_to_A(1, 2*m + n + i, edge_index, data, row, col)
 
-        # parallel code
-        # inputs_2 = [(n, m, node_index) for node_index in range(n)]
-        # with concurrent.futures.ProcessPoolExecutor(max_workers=num_of_conc_cores) as executor:
-            # results_1b = executor.map(compute_costraint_2, inputs_2)  # results is a generator object
 
         print('done with constraint 2')
 
@@ -285,21 +282,8 @@ def get_open_channels(plugin: Plugin):
     return channels
 
 
-#plugin.add_option(
-#    'greeting',
-#    'This is a first implementation of a rebalancing plugin based on Hide & Seek protocol. '
-#    'You can find all preliminaries and theoretical background at https://arxiv.org/pdf/2110.08848.pdf'
-#)
 
 
-# # Hide & Seek global variables
-# global_rebalancing_threshold = 50
-plugin.add_option(
-    "rebalance-threshold",
-    "50",
-    "Global rebalancing threshold defined in the white paper"
-    "Note: review that one later.",
-    "string"
-)
+
 
 plugin.run()
