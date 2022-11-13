@@ -752,6 +752,24 @@ def transaction_lists_gen2(topology, number_of_unique_transactions, transaction_
     return list_of_transactions
 
 
+def prepare_custom_topology():
+    # creates the following custom topology for testing
+    # A---B---C---D
+    #     | X |
+    # E---F---G---H
+
+    topology = nx.DiGraph()
+    topology.add_edges_from(
+        [('A', 'B'), ('B', 'A'), ('B', 'C'), ('C', 'B'), ('C', 'D'), ('D', 'C'), ('B', 'F'), ('F', 'B'), ('C', 'G'),
+         ('G', 'C'), ('E', 'F'), ('F', 'E'), ('F', 'G'), ('G', 'F'), ('G', 'H'), ('H', 'G')], satoshis=10000)
+
+    for u, v in topology.edges:
+        topology[u][v]['initial balance'] = topology[u][v]['satoshis']
+        topology[u][v]['base_fee'] = 1
+        topology[u][v]['relative_fee'] = 1
+
+    return topology
+
 global rebalancing_graph
 
 # record start time
@@ -766,7 +784,11 @@ tr_UB = 2 * 5000  # ~$2.2*3. max capacity: 500000000
 average_transaction_amount = np.floor((tr_UB - tr_LB) / 2)
 
 # Creating topology from snapshot ça te dit a graph with initial balances, capacities, weights and fees, transactions and states.
-topology = prepare_LN_snapshot(average_transaction_amount)
+# topology = prepare_LN_snapshot(average_transaction_amount)
+
+topology = prepare_custom_topology()
+
+
 initial_topology = copy.deepcopy(topology)
 
 # set up the input and experiment parameters
@@ -781,7 +803,7 @@ cycle_search_cutoff = 15
 max_rebalancings_per_transaction = 1
 
 # Hide & Seek input
-global_rebalancing_threshold = 50
+global_rebalancing_threshold = 10
 num_of_conc_cores = 3
 
 naming_suffix = f'-reb{global_rebalancing_threshold}-min{min(transaction_repetitions)}-max{max(transaction_repetitions)}'
