@@ -1,0 +1,2 @@
+logging results for 50 stacked transaction for H&S
+Duration of no rebalancing for 10 transaction repetitions: 7.9 minutes
