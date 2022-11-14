@@ -3,6 +3,12 @@
 This repository contains all necessary information regarding my bachelor thesis "Vulnerability Assessment and Enhancement of  Current Rebalancing Approaches in Lightning  Network". 
 
 
+## Assumptions for experiments
+1. Free rebalancing (without fee)
+2. Every node in the ``regtest` is willing to participate
+3. MPC delegates are known for all other nodes (bcs we need their ip addresses in order to execute MPyC LP calculation)
+
+
 # Raspberry Pi 4
 
 To be done.
@@ -31,6 +37,7 @@ Report file system disk space usage. The `-h` flag provides human readable outpu
 ```
 df -h
 ```
+
 Listing open ports in use.
 
 ```
