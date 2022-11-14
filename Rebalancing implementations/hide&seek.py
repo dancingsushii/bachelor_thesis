@@ -784,9 +784,9 @@ tr_UB = 2 * 5000  # ~$2.2*3. max capacity: 500000000
 average_transaction_amount = np.floor((tr_UB - tr_LB) / 2)
 
 # Creating topology from snapshot ça te dit a graph with initial balances, capacities, weights and fees, transactions and states.
-# topology = prepare_LN_snapshot(average_transaction_amount)
+topology = prepare_LN_snapshot(average_transaction_amount)
 
-topology = prepare_custom_topology()
+#topology = prepare_custom_topology()
 
 
 initial_topology = copy.deepcopy(topology)

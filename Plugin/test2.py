@@ -3,24 +3,35 @@ from gurobipy import GRB
 import numpy as np
 import scipy.sparse as sp
 import networkx as nx
+import concurrent.futures
 import matplotlib.pyplot as plt
 
+global rebalancing_graph
+global list_of_nodes
+global list_of_edges
+list_of_nodes = list(rebalancing_graph.nodes)
+list_of_edges = list(rebalancing_graph.edges)
+
+
 # Step 5: Executes LP on that graph (need a license be deployed)
-def LP_global_rebalancing(rebalancing_graph):
+def LP_global_rebalancing(rebalancing_graph, num_of_conc_cores):
+
 
     try:
         n = rebalancing_graph.number_of_nodes()
         m = rebalancing_graph.number_of_edges()
-        global list_of_nodes
-        global list_of_edges
-        list_of_nodes = list(rebalancing_graph.nodes)
-        list_of_edges = list(rebalancing_graph.edges)
 
-        # Create a new model, variables and set an objective
+
+        # Create a new model
         model = gp.Model("rebalancing-LP")
+
+        # Create variables
         x = model.addMVar(shape=m, vtype=GRB.CONTINUOUS, name="x")
+
+        # Set objective
         obj = np.zeros(m, dtype=float)
 
+        # only channels where transactions failed contribute to the objective function
         for edge_index in range(m):
             u, v = list_of_edges[edge_index]
             if 'objective function coefficient' in rebalancing_graph[u][v]:
@@ -28,27 +39,22 @@ def LP_global_rebalancing(rebalancing_graph):
 
         model.setObjective(obj @ x, GRB.MAXIMIZE)
 
-        ## adding constraints
-        # init
+
         data = []
         row = []
         col = []
         rhs = np.zeros(2 * m + 2 * n)
 
-        # constraint 1: respecting capacities: 0 <= f(u,v) <= m(u,v)
-        # I.e. -f(u,v) <= 0 and f(u,v) <= m(u,v)
-        # sequential code
-        for edge_index in range(m):
-            u, v = list_of_edges[edge_index]
+        inputs_1a = range(m)
+        with concurrent.futures.ProcessPoolExecutor(max_workers=num_of_conc_cores) as executor:
+            results_1a = executor.map(compute_costraint_1a, inputs_1a)  # results is a generator object
 
-            # -f(u,v) <= 0
-            append_to_A(-1, edge_index, edge_index, data, row, col)
-            # bound is zero, so no need to edit rhs
-            # rhs[edge_index] = 0
+        # 1b: f(u,v) <= m(u,v)
+        inputs_1b = [(m, edge_index) for edge_index in range(m)]
+        with concurrent.futures.ProcessPoolExecutor(max_workers=num_of_conc_cores) as executor:
+            results_1b = executor.map(compute_costraint_1b, inputs_1b)  # results is a generator object
 
-            # f(u,v) <= m(u,v)
-            append_to_A(1, m + edge_index, edge_index, data, row, col)
-            rhs[m + edge_index] = rebalancing_graph[u][v]['flow_bound']
+        all_entries = [result for result in results_1a] + [result for result in results_1b]  # unpack generator
 
         # set bound vector
         for edge_index in range(m):
@@ -57,35 +63,20 @@ def LP_global_rebalancing(rebalancing_graph):
 
         print(f'done with constraint 1')
 
-        # constraint 2: flow conservation: sum of in flows = some of out flows
-        # ineq 2a: \sum_{out edges} f(u,v) - \sum_{in edges} f(v,u) <= 0
-        # ineq 2b: \sum_{in edges} f(v,u) - \sum_{out edges} f(u,v) <= 0
-        # bounds (rhs vector) are already set to zero from initialization
-        for i in range(n):
-            # all bounds are zero, thus no need to edit rhs
+        inputs_2 = [(n, m, node_index) for node_index in range(n)]
+        with concurrent.futures.ProcessPoolExecutor(max_workers=num_of_conc_cores) as executor:
+            results_2 = executor.map(compute_costraint_2, inputs_2)  # results is a generator object
 
-            u = list_of_nodes[i]
+        print(f'done with constraint 2')
 
-            for edge in rebalancing_graph.out_edges(u):
-                edge_index = list_of_edges.index(edge)
+        all_entries_2 = [(d, r, c) for list_of_tuples in results_2 for d, r, c in list_of_tuples]
+        all_entries += all_entries_2  # unpack generator
 
-                # ineq 2a: \sum_{out edges} f(u,v)
-                append_to_A(1, 2*m + i, edge_index, data, row, col)
+        extract_coord = lambda coord: [tpl[coord] for tpl in all_entries]
 
-                # ineq 2b: - \sum_{out edges} f(u,v)
-                append_to_A(-1, 2*m + n + i, edge_index, data, row, col)
-
-            for edge in rebalancing_graph.in_edges(u):
-                edge_index = list_of_edges.index(edge)
-
-                # ineq 2a: - \sum_{in edges} f(v,u)
-                append_to_A(-1, 2*m + i, edge_index, data, row, col)
-
-                # ineq 2b: \sum_{in edges} f(v,u)
-                append_to_A(1, 2*m + n + i, edge_index, data, row, col)
-
-
-        print('done with constraint 2')
+        data = extract_coord(0)
+        row = extract_coord(1)
+        col = extract_coord(2)
 
         A_num_of_rows = 2 * m + 2 * n
         A_num_of_columns = m
@@ -125,27 +116,47 @@ def LP_global_rebalancing(rebalancing_graph):
         print('Encountered an attribute error')
 
 
-def append_to_A(d, r, c, data, row, col):
-    # append single items or lists to data, row, col
-    if type(d) != list:
-        data.append(d)
-        row.append(r)
-        col.append(c)
-    else:
-        for i in range(len(d)):
-            data.append(d[i])
-            row.append(r[i])
-            col.append(c[i])
+def compute_costraint_1a(edge_index):
+    # -f(u,v) <= 0
+    return (-1, edge_index, edge_index)
 
 
-# Step 6: Cycle decomposition on MPC delegate
-def cycle_decomposition(rebalancing_graph, balance_updates):
-    # Balance updates will be received as a list
-    # [('Charlie','Bob', 10), ('Bob','Alice', 4), ...]
-    cycle_flows = []
+def compute_costraint_1b(args):
+    # f(u,v) <= m(u,v)
+    m, edge_index = args
+    return (1, m + edge_index, edge_index)
 
 
-    return cycle_flows
+def compute_costraint_2(args):
+
+
+    n, m, node_index = args
+
+    u = list_of_nodes[node_index]
+
+    triples = []
+
+    for edge in rebalancing_graph.out_edges(u):
+        edge_index = list_of_edges.index(edge)
+
+        # ineq 2a: \sum_{out edges} f(u,v)
+        triples.append((1, 2 * m + node_index, edge_index))
+
+        # ineq 2b: - \sum_{out edges} f(u,v)
+        triples.append((-1, 2 * m + n + node_index, edge_index))
+
+    for edge in rebalancing_graph.in_edges(u):
+        edge_index = list_of_edges.index(edge)
+
+        # # ineq 2a: - \sum_{in edges} f(v,u)
+        triples.append((-1, 2 * m + node_index, edge_index))
+
+        # # ineq 2b: \sum_{in edges} f(v,u)
+        triples.append((1, 2 * m + n + node_index, edge_index))
+
+    return triples
+
+# Step 6: Cycle decomposition
 
 
 def main():
@@ -223,10 +234,9 @@ def main():
     HS['Bob']['Charlie']['satoshis'] = 40
     HS['Charlie']['Bob']['satoshis'] = 40
     # manual flow_bounds
-    # m(u,v)
     HS['Charlie']['Bob']['flow_bound'] = 10
     HS['Bob']['Charlie']['flow_bound'] = 0
-    HS['Bob']['Charlie']['objective function coefficient'] = 1
+    HS['Charlie']['Bob']['objective function coefficient'] = 1
 
     # Alice --> Bob and Alice <-- Bob
     HS.add_edge('Alice', 'Bob')
@@ -237,7 +247,7 @@ def main():
     HS['Alice']['Bob']['satoshis'] = 14
     HS['Alice']['Bob']['flow_bound'] = 3
     HS['Bob']['Alice']['flow_bound'] = 0
-    HS['Bob']['Alice']['objective function coefficient'] = 1
+    HS['Alice']['Bob']['objective function coefficient'] = 1
 
 
     # Bob --> Dave and Dave <-- Bob
@@ -249,7 +259,7 @@ def main():
     HS['Dave']['Bob']['satoshis'] = 16
     HS['Dave']['Bob']['flow_bound'] = 2
     HS['Bob']['Dave']['flow_bound'] = 0
-    HS['Bob']['Dave']['objective function coefficient'] = 1
+    HS['Dave']['Bob']['objective function coefficient'] = 1
 
     # Alice --> Dave and Dave <-- Alice
     HS.add_edge('Alice', 'Dave')
@@ -260,7 +270,7 @@ def main():
     HS['Alice']['Dave']['satoshis'] = 16
     HS['Alice']['Dave']['flow_bound'] = 2
     HS['Dave']['Alice']['flow_bound'] = 0
-    HS['Dave']['Alice']['objective function coefficient'] = 1
+    HS['Alice']['Dave']['objective function coefficient'] = 1
 
     # Alice --> Charlie and Alice <-- Charlie
     HS.add_edge('Alice', 'Charlie')
@@ -269,42 +279,18 @@ def main():
     HS['Charlie']['Alice']['initial_balance'] = 6
     HS['Charlie']['Alice']['satoshis'] = 16
     HS['Alice']['Charlie']['satoshis'] = 16
-    HS['Charlie']['Alice']['flow_bound'] = 0
-    HS['Alice']['Charlie']['flow_bound'] = 2
+    HS['Charlie']['Alice']['flow_bound'] = 2
+    HS['Alice']['Charlie']['flow_bound'] = 0
     HS['Charlie']['Alice']['objective function coefficient'] = 1
 
     # channels_where_trx_failed = [('Bob', 'Dave', 10), ('Dave', 'Alice', 10), ('Bob', 'Alice', 10)]
 
-
-    # The simplest graph
-    triangle = nx.DiGraph()
-    triangle.add_nodes_from(['Alice', 'Bob', 'Carol'])
-
-    # Alice --> Bob and Alice <-- Bob
-    triangle.add_edge('Alice', 'Bob')
-    triangle.add_edge('Bob', 'Alice')
-    triangle['Alice']['Bob']['initial_balance'] = 20
-    triangle['Bob']['Alice']['initial_balance'] = 10
-    triangle['Alice']['Bob']['satoshis'] = 30
-    triangle['Bob']['Alice']['satoshis'] = 30
-
-    # Bob --> Carol and Bob <-- Carol
-    triangle.add_edge('Bob', 'Carol')
-    triangle.add_edge('Carol', 'Bob')
-    triangle['Alice']['Bob']['initial_balance'] = 10
-    triangle['Bob']['Alice']['initial_balance'] = 4
-
-    # Carol --> Alice and Carol <-- Alice
-    triangle.add_edge('Carol', 'Alice')
-    triangle.add_edge('Alice', 'Carol')
-    triangle['Carol']['Alice']['initial_balance'] = 40
-    triangle['Alice']['Carol']['initial_balance'] = 20
-    triangle['Carol']['Alice']['objective function coefficient'] = 1
-
-
     # HS_rebalancing_graph(HS)
-    balances_updates = LP_global_rebalancing(HS)
-    cycle_decomposition(balances_updates)
+
+
+    num_of_conc_cores = 3
+    LP_global_rebalancing(HS, num_of_conc_cores)
 
 if __name__ == "__main__":
     main()
+

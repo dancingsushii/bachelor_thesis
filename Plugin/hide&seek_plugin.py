@@ -18,17 +18,17 @@ import scipy.sparse as sp
 
 
 # That is how I understand it now:
-# K Step 1: one node calls rebalanceall and starts to collect information about neighbours via sending them custom message: https://lightning.readthedocs.io/lightning-sendcustommsg.7.html
-# K Step 2: Following objective 50/50 function decisionMaker,
+# Step 1: one node calls rebalanceall and starts to collect information about neighbours via sending them custom message: https://lightning.readthedocs.io/lightning-sendcustommsg.7.html
+# Step 2: Following objective 50/50 function decisionMaker,
     #  bcs we rely on sendcustommsg each of the participants discovers information about other nodes not in recursive way but in TODO way
-# K Step 3: All data are packed and then is put together for input in *mocked MPC* for node initiator
-# T Step 4: Initiator node receives data as a graph node ids, channels (v, u, m(v, u))
-# T Step 5: Executes LP on that graph (need a license be deployed)
-# T Step 6: Cycle decomposition
-# K Step 7: Send instructions to other nodes 7.1 iterate through transaction list aka u -> v n satoshi via x channel
+# Step 3: All data are packed and then is put together for input in *mocked MPC* for node initiator
+# Step 4: Initiator node receives data as a graph node ids, channels (v, u, m(v, u))
+# Step 5: Executes LP on that graph (need a license be deployed)
+# Step 6: Cycle decomposition
+# Step 7: Send instructions to other nodes 7.1 iterate through transaction list aka u -> v n satoshi via x channel
 #                                         OR 7.2 (big amount of nodes causes flooding)
 
-# K & T Step 8: Try to build interface for execution of received transaction on each node
+# Step 8: Try to build interface for execution of received transaction on each node
 # Step 9: Rebalancing is done after some time when all transactions are executed
 
 
