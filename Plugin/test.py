@@ -11,8 +11,6 @@ def LP_global_rebalancing(rebalancing_graph):
     try:
         n = rebalancing_graph.number_of_nodes()
         m = rebalancing_graph.number_of_edges()
-        global list_of_nodes
-        global list_of_edges
         list_of_nodes = list(rebalancing_graph.nodes)
         list_of_edges = list(rebalancing_graph.edges)
 
@@ -144,167 +142,69 @@ def cycle_decomposition(rebalancing_graph, balance_updates):
     # [('Charlie','Bob', 10), ('Bob','Alice', 4), ...]
     cycle_flows = []
 
-
     return cycle_flows
 
 
 def main():
-    G = nx.DiGraph()
-
-    G.add_nodes_from(['A', 'B', 'C', 'D', 'F'])
-    G.add_edge('A', 'B')
-    G.add_edge('B', 'A')
-    G['B']['A']['initial_balance'] = 10
-    G['A']['B']['initial_balance'] = 70
-    G['B']['A']['satoshis'] = 10
-    G['A']['B']['satoshis'] = 70
-    # G['B']['A']['objective function coefficient'] = 1
-
-    G.add_edge('A', 'C')
-    G.add_edge('C', 'A')
-    G['C']['A']['initial_balance'] = 60
-    G['A']['C']['initial_balance'] = 5
-    G['C']['A']['satoshis'] = 60
-    G['A']['C']['satoshis'] = 5
-    # G['A']['C']['objective function coefficient'] = 1
-
-    G.add_edge('A', 'D')
-    G.add_edge('D', 'A')
-    G['D']['A']['initial_balance'] = 70
-    G['A']['D']['initial_balance'] = 10
-    G['D']['A']['satoshis'] = 70
-    G['A']['D']['satoshis'] = 10
-    # G['A']['D']['objective function coefficient'] = 1
-
-    G.add_edge('B', 'C')
-    G.add_edge('C', 'B')
-    G['B']['C']['initial_balance'] = 20
-    G['C']['B']['initial_balance'] = 60
-    G['B']['C']['satoshis'] = 20
-    G['C']['B']['satoshis'] = 60
-    # G['B']['C']['objective function coefficient'] = 1
-
-    G.add_edge('C', 'D')
-    G.add_edge('D', 'C')
-    G['D']['C']['initial_balance'] = 30
-    G['C']['D']['initial_balance'] = 70
-    G['D']['C']['satoshis'] = 30
-    G['C']['D']['satoshis'] = 70
-    # G['D']['C']['objective function coefficient'] = 1
-
-    G.add_edge('F', 'C')
-    G.add_edge('C', 'F')
-    G['F']['C']['initial_balance'] = 80
-    G['C']['F']['initial_balance'] = 5
-    G['F']['C']['satoshis'] = 80
-    G['C']['F']['satoshis'] = 5
-    # G['C']['F']['objective function coefficient'] = 1
-
-    G.add_edge('F', 'B')
-    G.add_edge('B', 'F')
-    # G['B']['F']['objective function coefficient'] = 1
-    G['F']['B']['initial_balance'] = 20
-    G['B']['F']['initial_balance'] = 30
-    G['F']['B']['satoshis'] = 20
-    G['B']['F']['satoshis'] = 30
-    # channels_where_trx_failed = [('B', 'C', 30), ('B', 'F', 40), ('C', 'D', 75)]
-
-    # Graph from H&S paper
-    HS = nx.DiGraph()
-    HS.add_nodes_from(['Charlie', 'Bob', 'Alice', 'Dave'])
-
-    # Charlie --> Bob and Charlie <-- Bob
-    HS.add_edge('Charlie', 'Bob')
-    HS.add_edge('Bob', 'Charlie')
-    # initial balances on both sides
-    HS['Charlie']['Bob']['initial_balance'] = 30
-    HS['Bob']['Charlie']['initial_balance'] = 10
-    # capacities
-    HS['Bob']['Charlie']['satoshis'] = 40
-    HS['Charlie']['Bob']['satoshis'] = 40
-    # manual flow_bounds
-    # m(u,v)
-    HS['Charlie']['Bob']['flow_bound'] = 10
-    HS['Bob']['Charlie']['flow_bound'] = 0
-    HS['Bob']['Charlie']['objective function coefficient'] = 1
-
-    # Alice --> Bob and Alice <-- Bob
-    HS.add_edge('Alice', 'Bob')
-    HS.add_edge('Bob', 'Alice')
-    HS['Alice']['Bob']['initial_balance'] = 10
-    HS['Bob']['Alice']['initial_balance'] = 4
-    HS['Bob']['Alice']['satoshis'] = 14
-    HS['Alice']['Bob']['satoshis'] = 14
-    HS['Alice']['Bob']['flow_bound'] = 3
-    HS['Bob']['Alice']['flow_bound'] = 0
-    HS['Bob']['Alice']['objective function coefficient'] = 1
-
-
-    # Bob --> Dave and Dave <-- Bob
-    HS.add_edge('Bob', 'Dave')
-    HS.add_edge('Dave', 'Bob')
-    HS['Dave']['Bob']['initial_balance'] = 10
-    HS['Bob']['Dave']['initial_balance'] = 6
-    HS['Bob']['Dave']['satoshis'] = 16
-    HS['Dave']['Bob']['satoshis'] = 16
-    HS['Dave']['Bob']['flow_bound'] = 2
-    HS['Bob']['Dave']['flow_bound'] = 0
-    HS['Bob']['Dave']['objective function coefficient'] = 1
-
-    # Alice --> Dave and Dave <-- Alice
-    HS.add_edge('Alice', 'Dave')
-    HS.add_edge('Dave', 'Alice')
-    HS['Alice']['Dave']['initial_balance'] = 10
-    HS['Dave']['Alice']['initial_balance'] = 6
-    HS['Dave']['Alice']['satoshis'] = 16
-    HS['Alice']['Dave']['satoshis'] = 16
-    HS['Alice']['Dave']['flow_bound'] = 2
-    HS['Dave']['Alice']['flow_bound'] = 0
-    HS['Dave']['Alice']['objective function coefficient'] = 1
-
-    # Alice --> Charlie and Alice <-- Charlie
-    HS.add_edge('Alice', 'Charlie')
-    HS.add_edge('Charlie', 'Alice')
-    HS['Alice']['Charlie']['initial_balance'] = 10
-    HS['Charlie']['Alice']['initial_balance'] = 6
-    HS['Charlie']['Alice']['satoshis'] = 16
-    HS['Alice']['Charlie']['satoshis'] = 16
-    HS['Charlie']['Alice']['flow_bound'] = 0
-    HS['Alice']['Charlie']['flow_bound'] = 2
-    HS['Charlie']['Alice']['objective function coefficient'] = 1
-
-    # channels_where_trx_failed = [('Bob', 'Dave', 10), ('Dave', 'Alice', 10), ('Bob', 'Alice', 10)]
-
-
     # The simplest graph
+    #      (20) Alice (20)
+    #           ^   ^
+    #     (40) /      \  (10)
+    #   Carol <--------> Bob
+    #     (10)          (40)
+
     triangle = nx.DiGraph()
     triangle.add_nodes_from(['Alice', 'Bob', 'Carol'])
 
     # Alice --> Bob and Alice <-- Bob
     triangle.add_edge('Alice', 'Bob')
     triangle.add_edge('Bob', 'Alice')
+    # both sides
     triangle['Alice']['Bob']['initial_balance'] = 20
     triangle['Bob']['Alice']['initial_balance'] = 10
+    # capacities
     triangle['Alice']['Bob']['satoshis'] = 30
     triangle['Bob']['Alice']['satoshis'] = 30
+    # flows
+    triangle['Alice']['Bob']['flow_bound'] = 5
+    triangle['Bob']['Alice']['flow_bound'] = 0
+
 
     # Bob --> Carol and Bob <-- Carol
     triangle.add_edge('Bob', 'Carol')
     triangle.add_edge('Carol', 'Bob')
-    triangle['Alice']['Bob']['initial_balance'] = 10
-    triangle['Bob']['Alice']['initial_balance'] = 4
+    # both sides
+    triangle['Bob']['Carol']['initial_balance'] = 40
+    triangle['Carol']['Bob']['initial_balance'] = 10
+    # capacities
+    triangle['Bob']['Carol']['satoshis'] = 50
+    triangle['Carol']['Bob']['satoshis'] = 50
+    # flows
+    triangle['Bob']['Carol']['flow_bound'] = 15
+    triangle['Carol']['Bob']['flow_bound'] = 5
+
+
 
     # Carol --> Alice and Carol <-- Alice
     triangle.add_edge('Carol', 'Alice')
     triangle.add_edge('Alice', 'Carol')
+    # both sides
     triangle['Carol']['Alice']['initial_balance'] = 40
     triangle['Alice']['Carol']['initial_balance'] = 20
+    # capacities
+    triangle['Carol']['Alice']['satoshis'] = 60
+    triangle['Alice']['Carol']['satoshis'] = 60
+    # objective
     triangle['Carol']['Alice']['objective function coefficient'] = 1
+    # flows
+    triangle['Carol']['Alice']['flow_bound'] = 10
+    triangle['Alice']['Carol']['flow_bound'] = 0
+
 
 
     # HS_rebalancing_graph(HS)
-    balances_updates = LP_global_rebalancing(HS)
-    cycle_decomposition(balances_updates)
+    balances_updates = LP_global_rebalancing(triangle)
+    cycle_decomposition(balances_updates, triangle)
 
 if __name__ == "__main__":
     main()
