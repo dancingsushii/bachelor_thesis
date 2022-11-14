@@ -5,6 +5,7 @@ import scipy.sparse as sp
 import networkx as nx
 import matplotlib.pyplot as plt
 
+
 # Step 5: Executes LP on that graph (need a license be deployed)
 def LP_global_rebalancing(rebalancing_graph):
 
@@ -123,6 +124,7 @@ def LP_global_rebalancing(rebalancing_graph):
         print('Encountered an attribute error')
 
 
+
 def append_to_A(d, r, c, data, row, col):
     # append single items or lists to data, row, col
     if type(d) != list:
@@ -137,10 +139,37 @@ def append_to_A(d, r, c, data, row, col):
 
 
 # Step 6: Cycle decomposition on MPC delegate
-def cycle_decomposition(rebalancing_graph, balance_updates):
-    # Balance updates will be received as a list
-    # [('Charlie','Bob', 10), ('Bob','Alice', 4), ...]
+def cycle_decomposition(balance_updates, rebalancing_graph):
+
     cycle_flows = []
+    active_edges = []
+
+    # consider only those edges that aren't null
+    for i in range(len(balance_updates)):
+        if balance_updates[i][2] != 0:
+            active_edges.append(balance_updates[i])
+
+    circulation_graph = nx.DiGraph()
+    circulation_graph_weighted = nx.DiGraph()
+    reduced_list_of_edges = list(map(lambda edge: (edge[0], edge[1]), active_edges))
+    circulation_graph.add_edges_from(reduced_list_of_edges)
+    circulation_graph_weighted.add_weighted_edges_from(active_edges)
+
+    while len(active_edges) > 0:
+        cycle = nx.find_cycle(circulation_graph)
+
+        # w ←− min f(e),e ∈ Ci
+        min_flow = min(dict(circulation_graph_weighted.edges).items(), key=lambda x: x[1]['weight'])
+
+
+        for edge in cycle:
+            # total_flow = sum(circulation_graph_weighted[u][v]['weight'] for (u, v) in test)
+            smallest_flow = min_flow[edge]['weight']
+            circulation_graph_weighted.remove_edge(smallest_flow)
+
+            # f(e) ←− f(e) − f_i(e)
+            # if f(e) = 0:
+                # active_edges.remove(edge)
 
     return cycle_flows
 
@@ -168,6 +197,8 @@ def main():
     # flows
     triangle['Alice']['Bob']['flow_bound'] = 5
     triangle['Bob']['Alice']['flow_bound'] = 0
+    # objective
+    triangle['Alice']['Bob']['objective function coefficient'] = 1
 
 
     # Bob --> Carol and Bob <-- Carol
@@ -181,7 +212,9 @@ def main():
     triangle['Carol']['Bob']['satoshis'] = 50
     # flows
     triangle['Bob']['Carol']['flow_bound'] = 15
-    triangle['Carol']['Bob']['flow_bound'] = 5
+    triangle['Carol']['Bob']['flow_bound'] = 0
+    # objective
+    triangle['Alice']['Bob']['objective function coefficient'] = 1
 
 
 
@@ -202,9 +235,104 @@ def main():
 
 
 
-    # HS_rebalancing_graph(HS)
-    balances_updates = LP_global_rebalancing(triangle)
-    cycle_decomposition(balances_updates, triangle)
+
+    # Alice --> Dave and Alice <-- Dave
+    triangle.add_edge('Alice', 'Dave')
+    triangle.add_edge('Dave', 'Alice')
+    # both sides
+    triangle['Alice']['Dave']['initial_balance'] = 70
+    triangle['Dave']['Alice']['initial_balance'] = 30
+    # capacities
+    triangle['Alice']['Dave']['satoshis'] = 100
+    triangle['Dave']['Alice']['satoshis'] = 100
+    # flows
+    triangle['Alice']['Dave']['flow_bound'] = 20
+    triangle['Dave']['Alice']['flow_bound'] = 0
+    # objective
+    triangle['Alice']['Dave']['objective function coefficient'] = 1
+
+
+
+    # Alice --> Emma and Alice <-- Emma
+    triangle.add_edge('Alice', 'Emma')
+    triangle.add_edge('Emma', 'Alice')
+    # both sides
+    triangle['Alice']['Emma']['initial_balance'] = 20
+    triangle['Emma']['Alice']['initial_balance'] = 20
+    # capacities
+    triangle['Alice']['Emma']['satoshis'] = 40
+    triangle['Emma']['Alice']['satoshis'] = 40
+    # flows
+    triangle['Alice']['Emma']['flow_bound'] = 0
+    triangle['Emma']['Alice']['flow_bound'] = 0
+
+
+
+    # Bob --> Dave and Bob <-- Dave
+    triangle.add_edge('Bob', 'Dave')
+    triangle.add_edge('Dave', 'Bob')
+    # both sides
+    triangle['Bob']['Dave']['initial_balance'] = 20
+    triangle['Dave']['Bob']['initial_balance'] = 70
+    # capacities
+    triangle['Bob']['Dave']['satoshis'] = 90
+    triangle['Dave']['Bob']['satoshis'] = 90
+    # flows
+    triangle['Bob']['Dave']['flow_bound'] = 0
+    triangle['Dave']['Bob']['flow_bound'] = 25
+    # objective
+    triangle['Dave']['Bob']['objective function coefficient'] = 1
+
+
+
+    # Bob --> Emma and Bob <-- Emma
+    triangle.add_edge('Bob', 'Emma')
+    triangle.add_edge('Emma', 'Bob')
+    # both sides
+    triangle['Bob']['Emma']['initial_balance'] = 50
+    triangle['Emma']['Bob']['initial_balance'] = 60
+    # capacities
+    triangle['Bob']['Emma']['satoshis'] = 110
+    triangle['Emma']['Bob']['satoshis'] = 110
+    # flows
+    triangle['Bob']['Emma']['flow_bound'] = 0
+    triangle['Emma']['Bob']['flow_bound'] = 5
+    # objective
+    triangle['Emma']['Bob']['objective function coefficient'] = 1
+
+
+    # Carol --> Dave and Carol <-- Dave
+    triangle.add_edge('Carol', 'Dave')
+    triangle.add_edge('Dave', 'Carol')
+    # both sides
+    triangle['Carol']['Dave']['initial_balance'] = 80
+    triangle['Dave']['Carol']['initial_balance'] = 20
+    # capacities
+    triangle['Carol']['Dave']['satoshis'] = 100
+    triangle['Dave']['Carol']['satoshis'] = 100
+    # objective
+    triangle['Carol']['Dave']['objective function coefficient'] = 1
+    # flows
+    triangle['Carol']['Dave']['flow_bound'] = 30
+    triangle['Dave']['Carol']['flow_bound'] = 0
+
+    # Carol --> Emma and Carol <-- Emma
+    triangle.add_edge('Carol', 'Emma')
+    triangle.add_edge('Emma', 'Carol')
+    # both sides
+    triangle['Carol']['Emma']['initial_balance'] = 10
+    triangle['Emma']['Carol']['initial_balance'] = 90
+    # capacities
+    triangle['Carol']['Emma']['satoshis'] = 100
+    triangle['Emma']['Carol']['satoshis'] = 100
+    # objective
+    triangle['Emma']['Carol']['objective function coefficient'] = 1
+    # flows
+    triangle['Carol']['Emma']['flow_bound'] = 0
+    triangle['Emma']['Carol']['flow_bound'] = 40
+
+    balance_updates = LP_global_rebalancing(triangle)
+    cycle_decomposition(balance_updates, triangle)
 
 if __name__ == "__main__":
     main()
