@@ -8,7 +8,6 @@ import matplotlib.pyplot as plt
 
 # Step 5: Executes LP on that graph (need a license be deployed)
 def LP_global_rebalancing(rebalancing_graph):
-
     try:
         n = rebalancing_graph.number_of_nodes()
         m = rebalancing_graph.number_of_edges()
@@ -69,20 +68,19 @@ def LP_global_rebalancing(rebalancing_graph):
                 edge_index = list_of_edges.index(edge)
 
                 # ineq 2a: \sum_{out edges} f(u,v)
-                append_to_A(1, 2*m + i, edge_index, data, row, col)
+                append_to_A(1, 2 * m + i, edge_index, data, row, col)
 
                 # ineq 2b: - \sum_{out edges} f(u,v)
-                append_to_A(-1, 2*m + n + i, edge_index, data, row, col)
+                append_to_A(-1, 2 * m + n + i, edge_index, data, row, col)
 
             for edge in rebalancing_graph.in_edges(u):
                 edge_index = list_of_edges.index(edge)
 
                 # ineq 2a: - \sum_{in edges} f(v,u)
-                append_to_A(-1, 2*m + i, edge_index, data, row, col)
+                append_to_A(-1, 2 * m + i, edge_index, data, row, col)
 
                 # ineq 2b: \sum_{in edges} f(v,u)
-                append_to_A(1, 2*m + n + i, edge_index, data, row, col)
-
+                append_to_A(1, 2 * m + n + i, edge_index, data, row, col)
 
         print('done with constraint 2')
 
@@ -124,7 +122,6 @@ def LP_global_rebalancing(rebalancing_graph):
         print('Encountered an attribute error')
 
 
-
 def append_to_A(d, r, c, data, row, col):
     # append single items or lists to data, row, col
     if type(d) != list:
@@ -138,40 +135,136 @@ def append_to_A(d, r, c, data, row, col):
             col.append(c[i])
 
 
+
+def foo(somelist):
+    return {x[2]:x for x in somelist}
+
+
 # Step 6: Cycle decomposition on MPC delegate
 def cycle_decomposition(balance_updates, rebalancing_graph):
-
     cycle_flows = []
-    active_edges = []
 
-    # consider only those edges that aren't null
-    for i in range(len(balance_updates)):
-        if balance_updates[i][2] != 0:
-            active_edges.append(balance_updates[i])
+    # [('Alice', 'Dave', 10), ('Bob', 'Carol', 15), ('Carol', 'Alice', 10), ('Carol', 'Dave', 5), ('Dave', 'Bob', 15)]
+    active_edges = list(filter(lambda edge: edge[2] != 0, balance_updates))
+    # {('Alice', 'Dave'): 10, ('Bob', 'Carol'): 15, ('Carol', 'Alice'): 10, ('Carol', 'Dave'): 5, ('Dave', 'Bob'): 15}
+    active_edges_dictionary = dict([((a, b), c) for a, b, c in active_edges])
 
-    circulation_graph = nx.DiGraph()
+    # Weighted circulation graph
     circulation_graph_weighted = nx.DiGraph()
-    reduced_list_of_edges = list(map(lambda edge: (edge[0], edge[1]), active_edges))
-    circulation_graph.add_edges_from(reduced_list_of_edges)
-    circulation_graph_weighted.add_weighted_edges_from(active_edges)
+    i = 1
 
-    while len(active_edges) > 0:
-        cycle = nx.find_cycle(circulation_graph)
+    while len(active_edges_dictionary) > 0:
 
-        # w ←− min f(e),e ∈ Ci
+        # circulation_graph_weighted.add_edges_from(active_edges_dictionary)
+        # circulation_graph_weighted.add_nodes_from(active_edges_dictionary.keys())
+
+        for e, w in active_edges_dictionary.items():
+            circulation_graph_weighted.add_edge(e[0], e[1], weight=w)
+
+
+        cycle = nx.find_cycle(circulation_graph_weighted)
         min_flow = min(dict(circulation_graph_weighted.edges).items(), key=lambda x: x[1]['weight'])
-
+        smallest_weight = min_flow[1]['weight']
 
         for edge in cycle:
-            # total_flow = sum(circulation_graph_weighted[u][v]['weight'] for (u, v) in test)
-            smallest_flow = min_flow[edge]['weight']
-            circulation_graph_weighted.remove_edge(smallest_flow)
+            edge = (edge[0], edge[1], circulation_graph_weighted[edge[0]][edge[1]]['weight'])
+            new_balance_update = (edge[0], edge[1], smallest_weight)
+            cycle_flows.append(new_balance_update)
+            edge = (edge[0], edge[1], edge[2] - new_balance_update[2])
 
-            # f(e) ←− f(e) − f_i(e)
-            # if f(e) = 0:
-                # active_edges.remove(edge)
+            # active_edges change the edge value
+
+            # active_edges[edge[0]][edge[1]]
+
+            if edge[2] == 0:
+                active_edges_dictionary.pop(edge)
+                # circulation_graph_weighted.remove(edge)
+
+        i += 1
 
     return cycle_flows
+
+
+def find_all_cycles(G, source=None, cycle_length_limit=None):
+    """forked from networkx dfs_edges function. Assumes nodes are integers, or at least
+    types which work with min() and > ."""
+    if source is None:
+        # produce edges for all components
+        nodes = [i[0] for i in nx.connected_components(G)]
+    else:
+        # produce edges for components with source
+        nodes = [source]
+    # extra variables for cycle detection:
+    cycle_stack = []
+    output_cycles = set()
+
+    def get_hashable_cycle(cycle):
+        """cycle as a tuple in a deterministic order."""
+        m = min(cycle)
+        mi = cycle.index(m)
+        mi_plus_1 = mi + 1 if mi < len(cycle) - 1 else 0
+        if cycle[mi - 1] > cycle[mi_plus_1]:
+            result = cycle[mi:] + cycle[:mi]
+        else:
+            result = list(reversed(cycle[:mi_plus_1])) + list(reversed(cycle[mi_plus_1:]))
+        return tuple(result)
+
+    for start in nodes:
+        if start in cycle_stack:
+            continue
+        cycle_stack.append(start)
+
+        stack = [(start, iter(G[start]))]
+        while stack:
+            parent, children = stack[-1]
+            try:
+                child = next(children)
+
+                if child not in cycle_stack:
+                    cycle_stack.append(child)
+                    stack.append((child, iter(G[child])))
+                else:
+                    i = cycle_stack.index(child)
+                    if i < len(cycle_stack) - 2:
+                        output_cycles.add(get_hashable_cycle(cycle_stack[i:]))
+
+            except StopIteration:
+                stack.pop()
+                cycle_stack.pop()
+
+    return [list(i) for i in output_cycles]
+
+
+def plot_graph_with_capacities(graph):
+    # Plot with capacities
+    plot_graph_with_capacities()
+    pos = nx.spring_layout(graph)
+    nx.draw(graph, pos, with_labels=True)
+    edge_labels = dict([((x, y), e['satoshis'])
+                        for x, y, e in graph.edges(data=True)])
+
+    nx.draw_networkx_edge_labels(graph, pos, edge_labels=edge_labels)
+    plt.show()
+
+
+def plot_graph_with_initial_balances(graph):
+    # Plot with initial balances
+    # colors = nx.get_edge_attributes(triangle, 'color').values()
+    # nx.draw_networkx(triangle, pos, with_labels=True, connectionstyle='arc3, rad = 0.1', edge_color=colors)
+    cmap = plt.cm.viridis(np.linspace(0, 1, graph.number_of_edges()))
+    pos = nx.spring_layout(graph)
+    nx.draw_networkx(graph, pos, with_labels=True, connectionstyle='arc3, rad = 0.1')
+
+
+
+    # nx.draw_networkx_edges(triangle, pos, edge_color=cmap)
+    edge_labels_bidirectional = dict([((u, v,), d['initial_balance'])
+                         for u, v, d in graph.edges(data=True)])
+    nx.draw_networkx_edge_labels(graph, pos, edge_labels=edge_labels_bidirectional,
+                                 label_pos=0.3, font_size=7)
+    nx.draw_networkx_edges(graph, pos, edge_color=cmap)
+    [nx.draw_networkx_edge_labels(graph, pos, edge_labels={e: i}, font_color=cmap[i]) for i, e in enumerate(graph.edges())]
+    plt.show()
 
 
 def main():
@@ -183,11 +276,11 @@ def main():
     #     (10)          (40)
 
     triangle = nx.DiGraph()
-    triangle.add_nodes_from(['Alice', 'Bob', 'Carol'])
+    triangle.add_nodes_from(['Alice', 'Bob', 'Carol', 'Emma', 'Dave'])
 
     # Alice --> Bob and Alice <-- Bob
-    triangle.add_edge('Alice', 'Bob')
-    triangle.add_edge('Bob', 'Alice')
+    triangle.add_edge('Alice', 'Bob', color='r')
+    triangle.add_edge('Bob', 'Alice', color='g')
     # both sides
     triangle['Alice']['Bob']['initial_balance'] = 20
     triangle['Bob']['Alice']['initial_balance'] = 10
@@ -200,10 +293,9 @@ def main():
     # objective
     triangle['Alice']['Bob']['objective function coefficient'] = 1
 
-
     # Bob --> Carol and Bob <-- Carol
-    triangle.add_edge('Bob', 'Carol')
-    triangle.add_edge('Carol', 'Bob')
+    triangle.add_edge('Bob', 'Carol', color='g')
+    triangle.add_edge('Carol', 'Bob', color='b')
     # both sides
     triangle['Bob']['Carol']['initial_balance'] = 40
     triangle['Carol']['Bob']['initial_balance'] = 10
@@ -216,11 +308,9 @@ def main():
     # objective
     triangle['Alice']['Bob']['objective function coefficient'] = 1
 
-
-
     # Carol --> Alice and Carol <-- Alice
-    triangle.add_edge('Carol', 'Alice')
-    triangle.add_edge('Alice', 'Carol')
+    triangle.add_edge('Carol', 'Alice', color='b')
+    triangle.add_edge('Alice', 'Carol', color='r')
     # both sides
     triangle['Carol']['Alice']['initial_balance'] = 40
     triangle['Alice']['Carol']['initial_balance'] = 20
@@ -233,12 +323,9 @@ def main():
     triangle['Carol']['Alice']['flow_bound'] = 10
     triangle['Alice']['Carol']['flow_bound'] = 0
 
-
-
-
     # Alice --> Dave and Alice <-- Dave
-    triangle.add_edge('Alice', 'Dave')
-    triangle.add_edge('Dave', 'Alice')
+    triangle.add_edge('Alice', 'Dave', color='r')
+    triangle.add_edge('Dave', 'Alice', color='y')
     # both sides
     triangle['Alice']['Dave']['initial_balance'] = 70
     triangle['Dave']['Alice']['initial_balance'] = 30
@@ -251,11 +338,9 @@ def main():
     # objective
     triangle['Alice']['Dave']['objective function coefficient'] = 1
 
-
-
     # Alice --> Emma and Alice <-- Emma
-    triangle.add_edge('Alice', 'Emma')
-    triangle.add_edge('Emma', 'Alice')
+    triangle.add_edge('Alice', 'Emma', color='r')
+    triangle.add_edge('Emma', 'Alice', color='m')
     # both sides
     triangle['Alice']['Emma']['initial_balance'] = 20
     triangle['Emma']['Alice']['initial_balance'] = 20
@@ -266,11 +351,9 @@ def main():
     triangle['Alice']['Emma']['flow_bound'] = 0
     triangle['Emma']['Alice']['flow_bound'] = 0
 
-
-
     # Bob --> Dave and Bob <-- Dave
-    triangle.add_edge('Bob', 'Dave')
-    triangle.add_edge('Dave', 'Bob')
+    triangle.add_edge('Bob', 'Dave', color='g')
+    triangle.add_edge('Dave', 'Bob', color='y')
     # both sides
     triangle['Bob']['Dave']['initial_balance'] = 20
     triangle['Dave']['Bob']['initial_balance'] = 70
@@ -283,11 +366,9 @@ def main():
     # objective
     triangle['Dave']['Bob']['objective function coefficient'] = 1
 
-
-
     # Bob --> Emma and Bob <-- Emma
-    triangle.add_edge('Bob', 'Emma')
-    triangle.add_edge('Emma', 'Bob')
+    triangle.add_edge('Bob', 'Emma', color='g')
+    triangle.add_edge('Emma', 'Bob', color='m')
     # both sides
     triangle['Bob']['Emma']['initial_balance'] = 50
     triangle['Emma']['Bob']['initial_balance'] = 60
@@ -300,10 +381,9 @@ def main():
     # objective
     triangle['Emma']['Bob']['objective function coefficient'] = 1
 
-
     # Carol --> Dave and Carol <-- Dave
-    triangle.add_edge('Carol', 'Dave')
-    triangle.add_edge('Dave', 'Carol')
+    triangle.add_edge('Carol', 'Dave', color='b')
+    triangle.add_edge('Dave', 'Carol', color='y')
     # both sides
     triangle['Carol']['Dave']['initial_balance'] = 80
     triangle['Dave']['Carol']['initial_balance'] = 20
@@ -317,8 +397,8 @@ def main():
     triangle['Dave']['Carol']['flow_bound'] = 0
 
     # Carol --> Emma and Carol <-- Emma
-    triangle.add_edge('Carol', 'Emma')
-    triangle.add_edge('Emma', 'Carol')
+    triangle.add_edge('Carol', 'Emma', color='b')
+    triangle.add_edge('Emma', 'Carol', color='m')
     # both sides
     triangle['Carol']['Emma']['initial_balance'] = 10
     triangle['Emma']['Carol']['initial_balance'] = 90
@@ -331,8 +411,14 @@ def main():
     triangle['Carol']['Emma']['flow_bound'] = 0
     triangle['Emma']['Carol']['flow_bound'] = 40
 
+    # Plotting
+    # plot_graph_with_capacities(triangle)
+    # plot_graph_with_initial_balances(triangle)
+
     balance_updates = LP_global_rebalancing(triangle)
     cycle_decomposition(balance_updates, triangle)
+
+
 
 if __name__ == "__main__":
     main()
