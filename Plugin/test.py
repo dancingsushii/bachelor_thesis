@@ -1,3 +1,5 @@
+from itertools import repeat
+
 import gurobipy as gp
 from gurobipy import GRB
 import numpy as np
@@ -135,104 +137,76 @@ def append_to_A(d, r, c, data, row, col):
             col.append(c[i])
 
 
-
-def foo(somelist):
-    return {x[2]:x for x in somelist}
-
-
 # Step 6: Cycle decomposition on MPC delegate
+# Ask maybe we should clean balance_updates before?
 def cycle_decomposition(balance_updates, rebalancing_graph):
-    cycle_flows = []
+    cycle_flows = [[]]
 
-    # [('Alice', 'Dave', 10), ('Bob', 'Carol', 15), ('Carol', 'Alice', 10), ('Carol', 'Dave', 5), ('Dave', 'Bob', 15)]
+
+    # Clean balances updates from zero ones and create dictionary
     active_edges = list(filter(lambda edge: edge[2] != 0, balance_updates))
-    # {('Alice', 'Dave'): 10, ('Bob', 'Carol'): 15, ('Carol', 'Alice'): 10, ('Carol', 'Dave'): 5, ('Dave', 'Bob'): 15}
     active_edges_dictionary = dict([((a, b), c) for a, b, c in active_edges])
 
-    # Weighted circulation graph
-    circulation_graph_weighted = nx.DiGraph()
-    i = 1
-
+    i = 0
+    # Active edges dictionary loaded correctly
     while len(active_edges_dictionary) > 0:
 
-        # circulation_graph_weighted.add_edges_from(active_edges_dictionary)
-        # circulation_graph_weighted.add_nodes_from(active_edges_dictionary.keys())
+        # Weighted circulation graph and start counter for circles
+        circulation_graph_weighted = nx.DiGraph()
 
+        # Update graph from dictionary for cycle search
         for e, w in active_edges_dictionary.items():
             circulation_graph_weighted.add_edge(e[0], e[1], weight=w)
 
-
+        # Find a cycle using DFS
         cycle = nx.find_cycle(circulation_graph_weighted)
+
+        # Add weights to cycle
+        for e in range(len(cycle)):
+            weight = active_edges_dictionary.get(cycle[e])
+            cycle[e] = (cycle[e][0], cycle[e][1], weight)
+
+        # Create a weighted graph from weighted cycle
+        cycle_graph = nx.DiGraph()
+        cycle_graph.add_weighted_edges_from(cycle)
+
+        # Find a minimum flow in the circulation graph
         min_flow = min(dict(circulation_graph_weighted.edges).items(), key=lambda x: x[1]['weight'])
         smallest_weight = min_flow[1]['weight']
 
-        for edge in cycle:
-            edge = (edge[0], edge[1], circulation_graph_weighted[edge[0]][edge[1]]['weight'])
+        # Create a cycle
+        for edge in cycle_graph.edges:
             new_balance_update = (edge[0], edge[1], smallest_weight)
-            cycle_flows.append(new_balance_update)
-            edge = (edge[0], edge[1], edge[2] - new_balance_update[2])
+            cycle_flows[i].append(new_balance_update)
 
-            # active_edges change the edge value
+            active_edges_dictionary[edge] = active_edges_dictionary.get(edge) - new_balance_update[2]
 
-            # active_edges[edge[0]][edge[1]]
-
-            if edge[2] == 0:
+            if active_edges_dictionary[edge] == 0:
                 active_edges_dictionary.pop(edge)
-                # circulation_graph_weighted.remove(edge)
 
         i += 1
+        cycle_flows.append([])
+
+    cycle_flows.pop()
 
     return cycle_flows
 
 
-def find_all_cycles(G, source=None, cycle_length_limit=None):
-    """forked from networkx dfs_edges function. Assumes nodes are integers, or at least
-    types which work with min() and > ."""
-    if source is None:
-        # produce edges for all components
-        nodes = [i[0] for i in nx.connected_components(G)]
-    else:
-        # produce edges for components with source
-        nodes = [source]
-    # extra variables for cycle detection:
-    cycle_stack = []
-    output_cycles = set()
 
-    def get_hashable_cycle(cycle):
-        """cycle as a tuple in a deterministic order."""
-        m = min(cycle)
-        mi = cycle.index(m)
-        mi_plus_1 = mi + 1 if mi < len(cycle) - 1 else 0
-        if cycle[mi - 1] > cycle[mi_plus_1]:
-            result = cycle[mi:] + cycle[:mi]
-        else:
-            result = list(reversed(cycle[:mi_plus_1])) + list(reversed(cycle[mi_plus_1:]))
-        return tuple(result)
+def htlc_creation_for_cycles(cycles):
 
-    for start in nodes:
-        if start in cycle_stack:
-            continue
-        cycle_stack.append(start)
+    for cycle in cycles:
+        # Assumption: we are executing all the cycle from the node initiator
+        # In the paper it happens randomly between all of the nodes in the cycles
+        invoice
+        # timelock tc ←− len(c)
+        # timelock tc ←− len(c)
+        # uc chooses random secret rc and creates hash hc = H(rc)
+        # for ec = (u, v) ∈ c starting from uc do
+        # u creates HTLC(u, v, wc, hc, tc)
+        # decrement tc by 1
 
-        stack = [(start, iter(G[start]))]
-        while stack:
-            parent, children = stack[-1]
-            try:
-                child = next(children)
-
-                if child not in cycle_stack:
-                    cycle_stack.append(child)
-                    stack.append((child, iter(G[child])))
-                else:
-                    i = cycle_stack.index(child)
-                    if i < len(cycle_stack) - 2:
-                        output_cycles.add(get_hashable_cycle(cycle_stack[i:]))
-
-            except StopIteration:
-                stack.pop()
-                cycle_stack.pop()
-
-    return [list(i) for i in output_cycles]
+    return 1
 
 
 def plot_graph_with_capacities(graph):
@@ -249,15 +223,15 @@ def plot_graph_with_capacities(graph):
 
 def plot_graph_with_initial_balances(graph):
     # Plot with initial balances
-    # colors = nx.get_edge_attributes(triangle, 'color').values()
-    # nx.draw_networkx(triangle, pos, with_labels=True, connectionstyle='arc3, rad = 0.1', edge_color=colors)
+    # colors = nx.get_edge_attributes(graph, 'color').values()
+    # nx.draw_networkx(graph, pos, with_labels=True, connectionstyle='arc3, rad = 0.1', edge_color=colors)
     cmap = plt.cm.viridis(np.linspace(0, 1, graph.number_of_edges()))
     pos = nx.spring_layout(graph)
     nx.draw_networkx(graph, pos, with_labels=True, connectionstyle='arc3, rad = 0.1')
 
 
 
-    # nx.draw_networkx_edges(triangle, pos, edge_color=cmap)
+    # nx.draw_networkx_edges(graph, pos, edge_color=cmap)
     edge_labels_bidirectional = dict([((u, v,), d['initial_balance'])
                          for u, v, d in graph.edges(data=True)])
     nx.draw_networkx_edge_labels(graph, pos, edge_labels=edge_labels_bidirectional,
@@ -275,149 +249,149 @@ def main():
     #   Carol <--------> Bob
     #     (10)          (40)
 
-    triangle = nx.DiGraph()
-    triangle.add_nodes_from(['Alice', 'Bob', 'Carol', 'Emma', 'Dave'])
+    graph = nx.DiGraph()
+    graph.add_nodes_from(['Alice', 'Bob', 'Carol', 'Emma', 'Dave'])
 
     # Alice --> Bob and Alice <-- Bob
-    triangle.add_edge('Alice', 'Bob', color='r')
-    triangle.add_edge('Bob', 'Alice', color='g')
+    graph.add_edge('Alice', 'Bob', color='r')
+    graph.add_edge('Bob', 'Alice', color='g')
     # both sides
-    triangle['Alice']['Bob']['initial_balance'] = 20
-    triangle['Bob']['Alice']['initial_balance'] = 10
+    graph['Alice']['Bob']['initial_balance'] = 20
+    graph['Bob']['Alice']['initial_balance'] = 10
     # capacities
-    triangle['Alice']['Bob']['satoshis'] = 30
-    triangle['Bob']['Alice']['satoshis'] = 30
+    graph['Alice']['Bob']['satoshis'] = 30
+    graph['Bob']['Alice']['satoshis'] = 30
     # flows
-    triangle['Alice']['Bob']['flow_bound'] = 5
-    triangle['Bob']['Alice']['flow_bound'] = 0
+    graph['Alice']['Bob']['flow_bound'] = 5
+    graph['Bob']['Alice']['flow_bound'] = 0
     # objective
-    triangle['Alice']['Bob']['objective function coefficient'] = 1
+    graph['Alice']['Bob']['objective function coefficient'] = 1
 
     # Bob --> Carol and Bob <-- Carol
-    triangle.add_edge('Bob', 'Carol', color='g')
-    triangle.add_edge('Carol', 'Bob', color='b')
+    graph.add_edge('Bob', 'Carol', color='g')
+    graph.add_edge('Carol', 'Bob', color='b')
     # both sides
-    triangle['Bob']['Carol']['initial_balance'] = 40
-    triangle['Carol']['Bob']['initial_balance'] = 10
+    graph['Bob']['Carol']['initial_balance'] = 40
+    graph['Carol']['Bob']['initial_balance'] = 10
     # capacities
-    triangle['Bob']['Carol']['satoshis'] = 50
-    triangle['Carol']['Bob']['satoshis'] = 50
+    graph['Bob']['Carol']['satoshis'] = 50
+    graph['Carol']['Bob']['satoshis'] = 50
     # flows
-    triangle['Bob']['Carol']['flow_bound'] = 15
-    triangle['Carol']['Bob']['flow_bound'] = 0
+    graph['Bob']['Carol']['flow_bound'] = 15
+    graph['Carol']['Bob']['flow_bound'] = 0
     # objective
-    triangle['Alice']['Bob']['objective function coefficient'] = 1
+    graph['Alice']['Bob']['objective function coefficient'] = 1
 
     # Carol --> Alice and Carol <-- Alice
-    triangle.add_edge('Carol', 'Alice', color='b')
-    triangle.add_edge('Alice', 'Carol', color='r')
+    graph.add_edge('Carol', 'Alice', color='b')
+    graph.add_edge('Alice', 'Carol', color='r')
     # both sides
-    triangle['Carol']['Alice']['initial_balance'] = 40
-    triangle['Alice']['Carol']['initial_balance'] = 20
+    graph['Carol']['Alice']['initial_balance'] = 40
+    graph['Alice']['Carol']['initial_balance'] = 20
     # capacities
-    triangle['Carol']['Alice']['satoshis'] = 60
-    triangle['Alice']['Carol']['satoshis'] = 60
+    graph['Carol']['Alice']['satoshis'] = 60
+    graph['Alice']['Carol']['satoshis'] = 60
     # objective
-    triangle['Carol']['Alice']['objective function coefficient'] = 1
+    graph['Carol']['Alice']['objective function coefficient'] = 1
     # flows
-    triangle['Carol']['Alice']['flow_bound'] = 10
-    triangle['Alice']['Carol']['flow_bound'] = 0
+    graph['Carol']['Alice']['flow_bound'] = 10
+    graph['Alice']['Carol']['flow_bound'] = 0
 
     # Alice --> Dave and Alice <-- Dave
-    triangle.add_edge('Alice', 'Dave', color='r')
-    triangle.add_edge('Dave', 'Alice', color='y')
+    graph.add_edge('Alice', 'Dave', color='r')
+    graph.add_edge('Dave', 'Alice', color='y')
     # both sides
-    triangle['Alice']['Dave']['initial_balance'] = 70
-    triangle['Dave']['Alice']['initial_balance'] = 30
+    graph['Alice']['Dave']['initial_balance'] = 70
+    graph['Dave']['Alice']['initial_balance'] = 30
     # capacities
-    triangle['Alice']['Dave']['satoshis'] = 100
-    triangle['Dave']['Alice']['satoshis'] = 100
+    graph['Alice']['Dave']['satoshis'] = 100
+    graph['Dave']['Alice']['satoshis'] = 100
     # flows
-    triangle['Alice']['Dave']['flow_bound'] = 20
-    triangle['Dave']['Alice']['flow_bound'] = 0
+    graph['Alice']['Dave']['flow_bound'] = 20
+    graph['Dave']['Alice']['flow_bound'] = 0
     # objective
-    triangle['Alice']['Dave']['objective function coefficient'] = 1
+    graph['Alice']['Dave']['objective function coefficient'] = 1
 
     # Alice --> Emma and Alice <-- Emma
-    triangle.add_edge('Alice', 'Emma', color='r')
-    triangle.add_edge('Emma', 'Alice', color='m')
+    graph.add_edge('Alice', 'Emma', color='r')
+    graph.add_edge('Emma', 'Alice', color='m')
     # both sides
-    triangle['Alice']['Emma']['initial_balance'] = 20
-    triangle['Emma']['Alice']['initial_balance'] = 20
+    graph['Alice']['Emma']['initial_balance'] = 20
+    graph['Emma']['Alice']['initial_balance'] = 20
     # capacities
-    triangle['Alice']['Emma']['satoshis'] = 40
-    triangle['Emma']['Alice']['satoshis'] = 40
+    graph['Alice']['Emma']['satoshis'] = 40
+    graph['Emma']['Alice']['satoshis'] = 40
     # flows
-    triangle['Alice']['Emma']['flow_bound'] = 0
-    triangle['Emma']['Alice']['flow_bound'] = 0
+    graph['Alice']['Emma']['flow_bound'] = 0
+    graph['Emma']['Alice']['flow_bound'] = 0
 
     # Bob --> Dave and Bob <-- Dave
-    triangle.add_edge('Bob', 'Dave', color='g')
-    triangle.add_edge('Dave', 'Bob', color='y')
+    graph.add_edge('Bob', 'Dave', color='g')
+    graph.add_edge('Dave', 'Bob', color='y')
     # both sides
-    triangle['Bob']['Dave']['initial_balance'] = 20
-    triangle['Dave']['Bob']['initial_balance'] = 70
+    graph['Bob']['Dave']['initial_balance'] = 20
+    graph['Dave']['Bob']['initial_balance'] = 70
     # capacities
-    triangle['Bob']['Dave']['satoshis'] = 90
-    triangle['Dave']['Bob']['satoshis'] = 90
+    graph['Bob']['Dave']['satoshis'] = 90
+    graph['Dave']['Bob']['satoshis'] = 90
     # flows
-    triangle['Bob']['Dave']['flow_bound'] = 0
-    triangle['Dave']['Bob']['flow_bound'] = 25
+    graph['Bob']['Dave']['flow_bound'] = 0
+    graph['Dave']['Bob']['flow_bound'] = 25
     # objective
-    triangle['Dave']['Bob']['objective function coefficient'] = 1
+    graph['Dave']['Bob']['objective function coefficient'] = 1
 
     # Bob --> Emma and Bob <-- Emma
-    triangle.add_edge('Bob', 'Emma', color='g')
-    triangle.add_edge('Emma', 'Bob', color='m')
+    graph.add_edge('Bob', 'Emma', color='g')
+    graph.add_edge('Emma', 'Bob', color='m')
     # both sides
-    triangle['Bob']['Emma']['initial_balance'] = 50
-    triangle['Emma']['Bob']['initial_balance'] = 60
+    graph['Bob']['Emma']['initial_balance'] = 50
+    graph['Emma']['Bob']['initial_balance'] = 60
     # capacities
-    triangle['Bob']['Emma']['satoshis'] = 110
-    triangle['Emma']['Bob']['satoshis'] = 110
+    graph['Bob']['Emma']['satoshis'] = 110
+    graph['Emma']['Bob']['satoshis'] = 110
     # flows
-    triangle['Bob']['Emma']['flow_bound'] = 0
-    triangle['Emma']['Bob']['flow_bound'] = 5
+    graph['Bob']['Emma']['flow_bound'] = 0
+    graph['Emma']['Bob']['flow_bound'] = 5
     # objective
-    triangle['Emma']['Bob']['objective function coefficient'] = 1
+    graph['Emma']['Bob']['objective function coefficient'] = 1
 
     # Carol --> Dave and Carol <-- Dave
-    triangle.add_edge('Carol', 'Dave', color='b')
-    triangle.add_edge('Dave', 'Carol', color='y')
+    graph.add_edge('Carol', 'Dave', color='b')
+    graph.add_edge('Dave', 'Carol', color='y')
     # both sides
-    triangle['Carol']['Dave']['initial_balance'] = 80
-    triangle['Dave']['Carol']['initial_balance'] = 20
+    graph['Carol']['Dave']['initial_balance'] = 80
+    graph['Dave']['Carol']['initial_balance'] = 20
     # capacities
-    triangle['Carol']['Dave']['satoshis'] = 100
-    triangle['Dave']['Carol']['satoshis'] = 100
+    graph['Carol']['Dave']['satoshis'] = 100
+    graph['Dave']['Carol']['satoshis'] = 100
     # objective
-    triangle['Carol']['Dave']['objective function coefficient'] = 1
+    graph['Carol']['Dave']['objective function coefficient'] = 1
     # flows
-    triangle['Carol']['Dave']['flow_bound'] = 30
-    triangle['Dave']['Carol']['flow_bound'] = 0
+    graph['Carol']['Dave']['flow_bound'] = 30
+    graph['Dave']['Carol']['flow_bound'] = 0
 
     # Carol --> Emma and Carol <-- Emma
-    triangle.add_edge('Carol', 'Emma', color='b')
-    triangle.add_edge('Emma', 'Carol', color='m')
+    graph.add_edge('Carol', 'Emma', color='b')
+    graph.add_edge('Emma', 'Carol', color='m')
     # both sides
-    triangle['Carol']['Emma']['initial_balance'] = 10
-    triangle['Emma']['Carol']['initial_balance'] = 90
+    graph['Carol']['Emma']['initial_balance'] = 10
+    graph['Emma']['Carol']['initial_balance'] = 90
     # capacities
-    triangle['Carol']['Emma']['satoshis'] = 100
-    triangle['Emma']['Carol']['satoshis'] = 100
+    graph['Carol']['Emma']['satoshis'] = 100
+    graph['Emma']['Carol']['satoshis'] = 100
     # objective
-    triangle['Emma']['Carol']['objective function coefficient'] = 1
+    graph['Emma']['Carol']['objective function coefficient'] = 1
     # flows
-    triangle['Carol']['Emma']['flow_bound'] = 0
-    triangle['Emma']['Carol']['flow_bound'] = 40
+    graph['Carol']['Emma']['flow_bound'] = 0
+    graph['Emma']['Carol']['flow_bound'] = 40
 
     # Plotting
-    # plot_graph_with_capacities(triangle)
-    # plot_graph_with_initial_balances(triangle)
+    # plot_graph_with_capacities(graph)
+    # plot_graph_with_initial_balances(graph)
 
-    balance_updates = LP_global_rebalancing(triangle)
-    cycle_decomposition(balance_updates, triangle)
-
+    balance_updates = LP_global_rebalancing(graph)
+    list_of_cycles = cycle_decomposition(balance_updates, graph)
+    htlc_creation_for_cycles(list_of_cycles)
 
 
 if __name__ == "__main__":
