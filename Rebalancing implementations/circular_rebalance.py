@@ -8,8 +8,6 @@ import uuid
 
 
 
-
-
 plugin = Plugin()
 plugin.rebalance_stop = False
 

@@ -198,7 +198,11 @@ def htlc_creation_for_cycles(cycles):
     for cycle in cycles:
         # Assumption: we are executing all the cycle from the node initiator
         # In the paper it happens randomly between all of the nodes in the cycles
-        invoice
+        invoice = plugin.rpc.invoice(msatoshi, label, description, retry_for + 60)
+        payment_hash = invoice['payment_hash']
+
+        # The requirement for payment_secret coincided with its addition to the invoice output.
+        payment_secret = invoice.get('payment_secret')
         # timelock tc ←− len(c)
         # timelock tc ←− len(c)
         # uc chooses random secret rc and creates hash hc = H(rc)

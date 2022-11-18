@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 
-from pyln.client import Plugin
+from pyln.client import Plugin, Millisatoshi
 import json, threading, random
 import networkx as nx
 from queue import Queue, Empty
@@ -562,6 +562,31 @@ def cycle_decomposition(balance_updates, rebalancing_graph):
 
 # endregion
 
+# region HTLC creation for cycles
+def htlc_creation_for_cycles(cycles):
+
+    for cycle in cycles:
+        # Assumption: we are executing all the cycle from the node initiator
+        # In the paper it happens randomly between all of the nodes in the cycles and it has to happen this way in reality
+        # Prepare inputs for invoicing
+        msatoshi = Millisatoshi(cycle[3])
+        invoice = plugin.rpc.invoice(msatoshi, label, description, retry_for + 60)
+        payment_hash = invoice['payment_hash']
+
+        # The requirement for payment_secret coincided with its addition to the invoice output.
+        payment_secret = invoice.get('payment_secret')
+        # timelock tc ←− len(c)
+        # timelock tc ←− len(c)
+        # uc chooses random secret rc and creates hash hc = H(rc)
+            # for ec = (u, v) ∈ c starting from uc do
+            for edge in cycle:
+
+            # u creates HTLC(u, v, wc, hc, tc)
+            # decrement tc by 1
+
+    return 1
+
+# endregion
 
 @plugin.method('start_hide_seek')
 def start_hide_seek(plugin):
