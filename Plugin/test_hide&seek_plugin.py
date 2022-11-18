@@ -3,7 +3,7 @@ from pyln.testing.fixtures import *
 import unittest
 
 
-plugin_path = os.path.join(os.path.dirname(__file__), "hide&seek_plugin.py")
+plugin_path = os.path.join(os.path.dirname(__file__), "test.py")
 pluginopt = {'plugin': plugin_path}
 
 

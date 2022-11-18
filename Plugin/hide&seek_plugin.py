@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+import time
+import uuid
 
 from pyln.client import Plugin, Millisatoshi
 import json, threading, random
@@ -289,7 +291,7 @@ def collect_neighbors_replies(plugin, neighbor_ids, participants, rejectors):
 
 
 def initiate_hide_seek(plugin):
-    """Rebalansing ``initiator thread`` will be locked in this function."""
+    """Rebalancing ``initiator thread`` will be locked in this function."""
     plugin.log('Daemon initiating hide and seek...')
     neighbor_ids = get_neighbor_ids(plugin)
     # TODO need to send search depth and timeouts too
@@ -568,32 +570,74 @@ def htlc_creation_for_cycles(cycles):
     for cycle in cycles:
         # Assumption: we are executing all the cycle from the node initiator
         # In the paper it happens randomly between all of the nodes in the cycles and it has to happen this way in reality
-        # Prepare inputs for invoicing
-        msatoshi = Millisatoshi(cycle[3])
-        invoice = plugin.rpc.invoice(msatoshi, label, description, retry_for + 60)
-        payment_hash = invoice['payment_hash']
 
         # The requirement for payment_secret coincided with its addition to the invoice output.
+        invoice = plugin.rpc.invoice()
         payment_secret = invoice.get('payment_secret')
         # timelock tc ←− len(c)
-        # timelock tc ←− len(c)
+        start_ts = int(time.time())
+
         # uc chooses random secret rc and creates hash hc = H(rc)
-            # for ec = (u, v) ∈ c starting from uc do
-            for edge in cycle:
-
+        # for ec = (u, v) ∈ c starting from uc do
+        for edge in cycle:
             # u creates HTLC(u, v, wc, hc, tc)
-            # decrement tc by 1
+            msatoshi = Millisatoshi(cycle[3])
+            label = "Rebalance-" + str(uuid.uuid4())
+            description = "%s to %s" % (edge[1]['outgoing_scid'], cycle[-1]['outgoing_scid'])
+            invoice = plugin.rpc.invoice(msatoshi, label, description)
+            payment_hash = invoice['payment_hash']
 
-    return 1
+                # decrement tc by 1
+
+        return invoice
+
+
+def wait_for_htlcs(plugin, failed_channels: list, scids: list = None):
+    # HTLC settlement helper
+    # taken and modified from pyln-testing/pyln/testing/utils.py
+    result = True
+    peers = plugin.rpc.listpeers()['peers']
+    for p, peer in enumerate(peers):
+        if 'channels' in peer:
+            for c, channel in enumerate(peer['channels']):
+                if scids is not None and channel.get('short_channel_id') not in scids:
+                    continue
+                if channel.get('short_channel_id') in failed_channels:
+                    result = False
+                    continue
+                if 'htlcs' in channel:
+                    if not wait_for(lambda: len(plugin.rpc.listpeers()['peers'][p]['channels'][c]['htlcs']) == 0):
+                        failed_channels.append(channel.get('short_channel_id'))
+                        plugin.log(f"Timeout while waiting for htlc settlement in channel {channel.get('short_channel_id')}")
+                        result = False
+    return result
+
+
+def wait_for(success, timeout: int = 60):
+    # cyclical lambda helper
+    # taken and modified from pyln-testing/pyln/testing/utils.py
+    start_time = time.time()
+    interval = 0.25
+    while not success():
+        time_left = start_time + timeout - time.time()
+        if time_left <= 0:
+            return False
+        time.sleep(min(interval, time_left))
+        interval *= 2
+        if interval > 5:
+            interval = 5
+    return True
 
 # endregion
+
+
 
 @plugin.method('start_hide_seek')
 def start_hide_seek(plugin):
     plugin.log('Starting hide and seek plugin...')
     # check if node is not participating in rebalancing already
     if busyRebalancing.is_set():
-        plugin.log("Ignore request to start hide and seek. Apperently I am already participating in rebalancing.")
+        plugin.log("Ignore request to start hide and seek. Apparently I am already participating in rebalancing.")
         return
     else:
         busyRebalancing.set()
@@ -603,7 +647,7 @@ def start_hide_seek(plugin):
         plugin.log("There is no need to participate in rebalancing for me.")
         return
     # start rebalancing daemon
-    plugin.log('Starting the rebalancing deamon for hide and seek...')
+    plugin.log('Starting the rebalancing daemon for hide and seek...')
     threading.Thread(name="initiator", target=initiate_hide_seek, args=(plugin,)).start()
 
 

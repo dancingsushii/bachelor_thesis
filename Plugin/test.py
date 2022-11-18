@@ -1,5 +1,4 @@
 from itertools import repeat
-
 import gurobipy as gp
 from gurobipy import GRB
 import numpy as np
@@ -171,7 +170,7 @@ def cycle_decomposition(balance_updates, rebalancing_graph):
         cycle_graph.add_weighted_edges_from(cycle)
 
         # Find a minimum flow in the circulation graph
-        min_flow = min(dict(circulation_graph_weighted.edges).items(), key=lambda x: x[1]['weight'])
+        min_flow = min(dict(cycle_graph.edges).items(), key=lambda x: x[1]['weight'])
         smallest_weight = min_flow[1]['weight']
 
         # Create a cycle
