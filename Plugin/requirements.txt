@@ -1,0 +1,5 @@
+networkx
+gurobipy
+numpy
+scipy
+pyln-client>=0.12.1

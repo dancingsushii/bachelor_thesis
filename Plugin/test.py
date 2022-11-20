@@ -5,6 +5,15 @@ import numpy as np
 import scipy.sparse as sp
 import networkx as nx
 import matplotlib.pyplot as plt
+from pyln.client import Plugin, Millisatoshi
+
+plugin = Plugin()
+
+
+@plugin.init()
+def init(options, configuration, plugin):
+    plugin.log("test.py initializing {}".format(configuration))
+    plugin.node_id = plugin.rpc.getinfo()['id']
 
 
 # Step 5: Executes LP on that graph (need a license be deployed)
@@ -191,17 +200,16 @@ def cycle_decomposition(balance_updates, rebalancing_graph):
     return cycle_flows
 
 
-
 def htlc_creation_for_cycles(cycles):
 
     for cycle in cycles:
         # Assumption: we are executing all the cycle from the node initiator
         # In the paper it happens randomly between all of the nodes in the cycles
-        invoice = plugin.rpc.invoice(msatoshi, label, description, retry_for + 60)
-        payment_hash = invoice['payment_hash']
+        # invoice = plugin.rpc.invoice(msatoshi, label, description, retry_for + 60)
+        # payment_hash = invoice['payment_hash']
 
         # The requirement for payment_secret coincided with its addition to the invoice output.
-        payment_secret = invoice.get('payment_secret')
+        # payment_secret = invoice.get('payment_secret')
         # timelock tc ←− len(c)
         # timelock tc ←− len(c)
         # uc chooses random secret rc and creates hash hc = H(rc)
@@ -209,9 +217,9 @@ def htlc_creation_for_cycles(cycles):
         # u creates HTLC(u, v, wc, hc, tc)
         # decrement tc by 1
 
-    return 1
+        return 1
 
-
+# region Plotting
 def plot_graph_with_capacities(graph):
     # Plot with capacities
     plot_graph_with_capacities()
@@ -242,160 +250,165 @@ def plot_graph_with_initial_balances(graph):
     nx.draw_networkx_edges(graph, pos, edge_color=cmap)
     [nx.draw_networkx_edge_labels(graph, pos, edge_labels={e: i}, font_color=cmap[i]) for i, e in enumerate(graph.edges())]
     plt.show()
+# endregion
+
+# region Old main function for testing
+#def main():
+#     # The simplest graph
+#     #      (20) Alice (20)
+#     #           ^   ^
+#     #     (40) /      \  (10)
+#     #   Carol <--------> Bob
+#     #     (10)          (40)
+#
+#     graph = nx.DiGraph()
+#     graph.add_nodes_from(['Alice', 'Bob', 'Carol', 'Emma', 'Dave'])
+#
+#     # Alice --> Bob and Alice <-- Bob
+#     graph.add_edge('Alice', 'Bob', color='r')
+#     graph.add_edge('Bob', 'Alice', color='g')
+#     # both sides
+#     graph['Alice']['Bob']['initial_balance'] = 20
+#     graph['Bob']['Alice']['initial_balance'] = 10
+#     # capacities
+#     graph['Alice']['Bob']['satoshis'] = 30
+#     graph['Bob']['Alice']['satoshis'] = 30
+#     # flows
+#     graph['Alice']['Bob']['flow_bound'] = 5
+#     graph['Bob']['Alice']['flow_bound'] = 0
+#     # objective
+#     graph['Alice']['Bob']['objective function coefficient'] = 1
+#
+#     # Bob --> Carol and Bob <-- Carol
+#     graph.add_edge('Bob', 'Carol', color='g')
+#     graph.add_edge('Carol', 'Bob', color='b')
+#     # both sides
+#     graph['Bob']['Carol']['initial_balance'] = 40
+#     graph['Carol']['Bob']['initial_balance'] = 10
+#     # capacities
+#     graph['Bob']['Carol']['satoshis'] = 50
+#     graph['Carol']['Bob']['satoshis'] = 50
+#     # flows
+#     graph['Bob']['Carol']['flow_bound'] = 15
+#     graph['Carol']['Bob']['flow_bound'] = 0
+#     # objective
+#     graph['Alice']['Bob']['objective function coefficient'] = 1
+#
+#     # Carol --> Alice and Carol <-- Alice
+#     graph.add_edge('Carol', 'Alice', color='b')
+#     graph.add_edge('Alice', 'Carol', color='r')
+#     # both sides
+#     graph['Carol']['Alice']['initial_balance'] = 40
+#     graph['Alice']['Carol']['initial_balance'] = 20
+#     # capacities
+#     graph['Carol']['Alice']['satoshis'] = 60
+#     graph['Alice']['Carol']['satoshis'] = 60
+#     # objective
+#     graph['Carol']['Alice']['objective function coefficient'] = 1
+#     # flows
+#     graph['Carol']['Alice']['flow_bound'] = 10
+#     graph['Alice']['Carol']['flow_bound'] = 0
+#
+#     # Alice --> Dave and Alice <-- Dave
+#     graph.add_edge('Alice', 'Dave', color='r')
+#     graph.add_edge('Dave', 'Alice', color='y')
+#     # both sides
+#     graph['Alice']['Dave']['initial_balance'] = 70
+#     graph['Dave']['Alice']['initial_balance'] = 30
+#     # capacities
+#     graph['Alice']['Dave']['satoshis'] = 100
+#     graph['Dave']['Alice']['satoshis'] = 100
+#     # flows
+#     graph['Alice']['Dave']['flow_bound'] = 20
+#     graph['Dave']['Alice']['flow_bound'] = 0
+#     # objective
+#     graph['Alice']['Dave']['objective function coefficient'] = 1
+#
+#     # Alice --> Emma and Alice <-- Emma
+#     graph.add_edge('Alice', 'Emma', color='r')
+#     graph.add_edge('Emma', 'Alice', color='m')
+#     # both sides
+#     graph['Alice']['Emma']['initial_balance'] = 20
+#     graph['Emma']['Alice']['initial_balance'] = 20
+#     # capacities
+#     graph['Alice']['Emma']['satoshis'] = 40
+#     graph['Emma']['Alice']['satoshis'] = 40
+#     # flows
+#     graph['Alice']['Emma']['flow_bound'] = 0
+#     graph['Emma']['Alice']['flow_bound'] = 0
+#
+#     # Bob --> Dave and Bob <-- Dave
+#     graph.add_edge('Bob', 'Dave', color='g')
+#     graph.add_edge('Dave', 'Bob', color='y')
+#     # both sides
+#     graph['Bob']['Dave']['initial_balance'] = 20
+#     graph['Dave']['Bob']['initial_balance'] = 70
+#     # capacities
+#     graph['Bob']['Dave']['satoshis'] = 90
+#     graph['Dave']['Bob']['satoshis'] = 90
+#     # flows
+#     graph['Bob']['Dave']['flow_bound'] = 0
+#     graph['Dave']['Bob']['flow_bound'] = 25
+#     # objective
+#     graph['Dave']['Bob']['objective function coefficient'] = 1
+#
+#     # Bob --> Emma and Bob <-- Emma
+#     graph.add_edge('Bob', 'Emma', color='g')
+#     graph.add_edge('Emma', 'Bob', color='m')
+#     # both sides
+#     graph['Bob']['Emma']['initial_balance'] = 50
+#     graph['Emma']['Bob']['initial_balance'] = 60
+#     # capacities
+#     graph['Bob']['Emma']['satoshis'] = 110
+#     graph['Emma']['Bob']['satoshis'] = 110
+#     # flows
+#     graph['Bob']['Emma']['flow_bound'] = 0
+#     graph['Emma']['Bob']['flow_bound'] = 5
+#     # objective
+#     graph['Emma']['Bob']['objective function coefficient'] = 1
+#
+#     # Carol --> Dave and Carol <-- Dave
+#     graph.add_edge('Carol', 'Dave', color='b')
+#     graph.add_edge('Dave', 'Carol', color='y')
+#     # both sides
+#     graph['Carol']['Dave']['initial_balance'] = 80
+#     graph['Dave']['Carol']['initial_balance'] = 20
+#     # capacities
+#     graph['Carol']['Dave']['satoshis'] = 100
+#     graph['Dave']['Carol']['satoshis'] = 100
+#     # objective
+#     graph['Carol']['Dave']['objective function coefficient'] = 1
+#     # flows
+#     graph['Carol']['Dave']['flow_bound'] = 30
+#     graph['Dave']['Carol']['flow_bound'] = 0
+#
+#     # Carol --> Emma and Carol <-- Emma
+#     graph.add_edge('Carol', 'Emma', color='b')
+#     graph.add_edge('Emma', 'Carol', color='m')
+#     # both sides
+#     graph['Carol']['Emma']['initial_balance'] = 10
+#     graph['Emma']['Carol']['initial_balance'] = 90
+#     # capacities
+#     graph['Carol']['Emma']['satoshis'] = 100
+#     graph['Emma']['Carol']['satoshis'] = 100
+#     # objective
+#     graph['Emma']['Carol']['objective function coefficient'] = 1
+#     # flows
+#     graph['Carol']['Emma']['flow_bound'] = 0
+#     graph['Emma']['Carol']['flow_bound'] = 40
+#
+#     # Plotting
+#     # plot_graph_with_capacities(graph)
+#     # plot_graph_with_initial_balances(graph)
+#
+#     balance_updates = LP_global_rebalancing(graph)
+#     list_of_cycles = cycle_decomposition(balance_updates, graph)
+#     htlc_creation_for_cycles(list_of_cycles)
+#
+#
+# if __name__ == "__main__":
+#     main()
+# endregion
 
 
-def main():
-    # The simplest graph
-    #      (20) Alice (20)
-    #           ^   ^
-    #     (40) /      \  (10)
-    #   Carol <--------> Bob
-    #     (10)          (40)
-
-    graph = nx.DiGraph()
-    graph.add_nodes_from(['Alice', 'Bob', 'Carol', 'Emma', 'Dave'])
-
-    # Alice --> Bob and Alice <-- Bob
-    graph.add_edge('Alice', 'Bob', color='r')
-    graph.add_edge('Bob', 'Alice', color='g')
-    # both sides
-    graph['Alice']['Bob']['initial_balance'] = 20
-    graph['Bob']['Alice']['initial_balance'] = 10
-    # capacities
-    graph['Alice']['Bob']['satoshis'] = 30
-    graph['Bob']['Alice']['satoshis'] = 30
-    # flows
-    graph['Alice']['Bob']['flow_bound'] = 5
-    graph['Bob']['Alice']['flow_bound'] = 0
-    # objective
-    graph['Alice']['Bob']['objective function coefficient'] = 1
-
-    # Bob --> Carol and Bob <-- Carol
-    graph.add_edge('Bob', 'Carol', color='g')
-    graph.add_edge('Carol', 'Bob', color='b')
-    # both sides
-    graph['Bob']['Carol']['initial_balance'] = 40
-    graph['Carol']['Bob']['initial_balance'] = 10
-    # capacities
-    graph['Bob']['Carol']['satoshis'] = 50
-    graph['Carol']['Bob']['satoshis'] = 50
-    # flows
-    graph['Bob']['Carol']['flow_bound'] = 15
-    graph['Carol']['Bob']['flow_bound'] = 0
-    # objective
-    graph['Alice']['Bob']['objective function coefficient'] = 1
-
-    # Carol --> Alice and Carol <-- Alice
-    graph.add_edge('Carol', 'Alice', color='b')
-    graph.add_edge('Alice', 'Carol', color='r')
-    # both sides
-    graph['Carol']['Alice']['initial_balance'] = 40
-    graph['Alice']['Carol']['initial_balance'] = 20
-    # capacities
-    graph['Carol']['Alice']['satoshis'] = 60
-    graph['Alice']['Carol']['satoshis'] = 60
-    # objective
-    graph['Carol']['Alice']['objective function coefficient'] = 1
-    # flows
-    graph['Carol']['Alice']['flow_bound'] = 10
-    graph['Alice']['Carol']['flow_bound'] = 0
-
-    # Alice --> Dave and Alice <-- Dave
-    graph.add_edge('Alice', 'Dave', color='r')
-    graph.add_edge('Dave', 'Alice', color='y')
-    # both sides
-    graph['Alice']['Dave']['initial_balance'] = 70
-    graph['Dave']['Alice']['initial_balance'] = 30
-    # capacities
-    graph['Alice']['Dave']['satoshis'] = 100
-    graph['Dave']['Alice']['satoshis'] = 100
-    # flows
-    graph['Alice']['Dave']['flow_bound'] = 20
-    graph['Dave']['Alice']['flow_bound'] = 0
-    # objective
-    graph['Alice']['Dave']['objective function coefficient'] = 1
-
-    # Alice --> Emma and Alice <-- Emma
-    graph.add_edge('Alice', 'Emma', color='r')
-    graph.add_edge('Emma', 'Alice', color='m')
-    # both sides
-    graph['Alice']['Emma']['initial_balance'] = 20
-    graph['Emma']['Alice']['initial_balance'] = 20
-    # capacities
-    graph['Alice']['Emma']['satoshis'] = 40
-    graph['Emma']['Alice']['satoshis'] = 40
-    # flows
-    graph['Alice']['Emma']['flow_bound'] = 0
-    graph['Emma']['Alice']['flow_bound'] = 0
-
-    # Bob --> Dave and Bob <-- Dave
-    graph.add_edge('Bob', 'Dave', color='g')
-    graph.add_edge('Dave', 'Bob', color='y')
-    # both sides
-    graph['Bob']['Dave']['initial_balance'] = 20
-    graph['Dave']['Bob']['initial_balance'] = 70
-    # capacities
-    graph['Bob']['Dave']['satoshis'] = 90
-    graph['Dave']['Bob']['satoshis'] = 90
-    # flows
-    graph['Bob']['Dave']['flow_bound'] = 0
-    graph['Dave']['Bob']['flow_bound'] = 25
-    # objective
-    graph['Dave']['Bob']['objective function coefficient'] = 1
-
-    # Bob --> Emma and Bob <-- Emma
-    graph.add_edge('Bob', 'Emma', color='g')
-    graph.add_edge('Emma', 'Bob', color='m')
-    # both sides
-    graph['Bob']['Emma']['initial_balance'] = 50
-    graph['Emma']['Bob']['initial_balance'] = 60
-    # capacities
-    graph['Bob']['Emma']['satoshis'] = 110
-    graph['Emma']['Bob']['satoshis'] = 110
-    # flows
-    graph['Bob']['Emma']['flow_bound'] = 0
-    graph['Emma']['Bob']['flow_bound'] = 5
-    # objective
-    graph['Emma']['Bob']['objective function coefficient'] = 1
-
-    # Carol --> Dave and Carol <-- Dave
-    graph.add_edge('Carol', 'Dave', color='b')
-    graph.add_edge('Dave', 'Carol', color='y')
-    # both sides
-    graph['Carol']['Dave']['initial_balance'] = 80
-    graph['Dave']['Carol']['initial_balance'] = 20
-    # capacities
-    graph['Carol']['Dave']['satoshis'] = 100
-    graph['Dave']['Carol']['satoshis'] = 100
-    # objective
-    graph['Carol']['Dave']['objective function coefficient'] = 1
-    # flows
-    graph['Carol']['Dave']['flow_bound'] = 30
-    graph['Dave']['Carol']['flow_bound'] = 0
-
-    # Carol --> Emma and Carol <-- Emma
-    graph.add_edge('Carol', 'Emma', color='b')
-    graph.add_edge('Emma', 'Carol', color='m')
-    # both sides
-    graph['Carol']['Emma']['initial_balance'] = 10
-    graph['Emma']['Carol']['initial_balance'] = 90
-    # capacities
-    graph['Carol']['Emma']['satoshis'] = 100
-    graph['Emma']['Carol']['satoshis'] = 100
-    # objective
-    graph['Emma']['Carol']['objective function coefficient'] = 1
-    # flows
-    graph['Carol']['Emma']['flow_bound'] = 0
-    graph['Emma']['Carol']['flow_bound'] = 40
-
-    # Plotting
-    # plot_graph_with_capacities(graph)
-    # plot_graph_with_initial_balances(graph)
-
-    balance_updates = LP_global_rebalancing(graph)
-    list_of_cycles = cycle_decomposition(balance_updates, graph)
-    htlc_creation_for_cycles(list_of_cycles)
-
-
-if __name__ == "__main__":
-    main()
+plugin.run()
