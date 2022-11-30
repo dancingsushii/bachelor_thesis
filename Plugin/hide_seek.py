@@ -386,15 +386,15 @@ def send_cycle_flow(plugin, peer_id, payload) -> int:
 
 # #region graph logic
 
-def list_peers(id = None, level = None) -> list:
-  shell_input = ['lightning-cli', 'listpeers']
-  if id is not None: 
-    shell_input.append(str(id))
-  if level is not None:
-    shell_input.append(str(level))
-  shell_byte_output = subprocess.check_output(shell_input)
-  peers = json.loads(shell_byte_output)
-  return peers
+# def list_peers(id = None, level = None) -> list:
+#   shell_input = ['lightning-cli', 'listpeers']
+#   if id is not None: 
+#     shell_input.append(str(id))
+#   if level is not None:
+#     shell_input.append(str(level))
+#   shell_byte_output = subprocess.check_output(shell_input)
+#   peers = json.loads(shell_byte_output)
+#   return peers
 
 def get_node_id(plugin):
   return plugin.rpc.getinfo()["id"]
@@ -410,8 +410,7 @@ def get_neighbor_ids(plugin):
 def get_peers(plugin):
   """Returns infos about peers in a list of dicts. Only peers with opened channels in ``CHANNELD_NORMAL`` state and with "connected" == True are returned. \nFind an example of one dict in the returned list in the peer_example.json."""
   # get channels dict
-  # peers = plugin.rpc.call('listpeers', {}) # TODO replace with the normal call, when fixed
-  peers = list_peers()
+  peers = plugin.rpc.call('listpeers', {}) 
   # filter channels
   filter_strategy = lambda peer: "channels" in peer and len(peer["channels"]) > 0 \
     and peer["channels"][0]["state"] == "CHANNELD_NORMAL" and peer["connected"] == True
@@ -433,16 +432,29 @@ def extend_rebalancing_graph_with_local_data(plugin, own_id, rebalancing_graph: 
   for peer in peers:
     
     peer_id, channel = peer["id"], peer["channels"][0]
-    total_balance = int(channel["inflight"]["total_funding_msat"].replace("msat", ""))
-    own_initial_balance = int(channel["inflight"]["our_funding_msat"].replace("msat", ""))
+
+    # These two are for dual funding functionality
+    # total_balance = int(channel["inflight"]["total_funding_msat"].replace("msat", ""))
+    # own_initial_balance = int(channel["inflight"]["our_funding_msat"].replace("msat", ""))
+  
+    total_balance = int(channel["total_msat"].replace("msat", ""))
+    own_initial_balance = int(channel["to_us_msat"].replace("msat", ""))
     remote_initial_balance = total_balance - own_initial_balance
     scid = channel["short_channel_id"]
-    # TODO calculate flow_bounds here and pass it instead of own_ and remote_ initial_balances!
+
+    half_of_capacity = total_balance/2
+    if own_initial_balance > half_of_capacity:
+      own_flow_bound, remote_flow_bound = own_initial_balance - half_of_capacity, 0
+      own_obj_func_coef, remote_obj_func_coef = 1, 0
+    else:
+      own_flow_bound, remote_flow_bound = 0, remote_initial_balance - half_of_capacity
+      own_obj_func_coef, remote_obj_func_coef = 0, 1
+
 
     if not rebalancing_graph.has_edge(own_id, peer_id):
-      rebalancing_graph.add_edge(own_id, peer_id, flow_bound = own_initial_balance, short_channel_id = scid, objective_function_coefficient = "TODO")
+      rebalancing_graph.add_edge(own_id, peer_id, flow_bound = own_flow_bound, short_channel_id = scid, objective_function_coefficient = own_obj_func_coef)
     if not rebalancing_graph.has_edge(peer_id, own_id):
-      rebalancing_graph.add_edge(peer_id, own_id, flow_bound = remote_initial_balance, short_channel_id = scid, objective_function_coefficient = "TODO")    
+      rebalancing_graph.add_edge(peer_id, own_id, flow_bound = remote_flow_bound, short_channel_id = scid, objective_function_coefficient = remote_obj_func_coef)    
 
   return rebalancing_graph
 
@@ -456,8 +468,13 @@ def extend_rebalancing_graph(plugin, own_id, rebalancing_graph: nx.DiGraph) -> n
   for peer in peers:
     
     peer_id, channel = peer["id"], peer["channels"][0]
-    total_balance = int(channel["inflight"]["total_funding_msat"].replace("msat", ""))
-    own_initial_balance = int(channel["inflight"]["our_funding_msat"].replace("msat", ""))
+
+    # These two are for dual funding functionality
+    # total_balance = int(channel["inflight"]["total_funding_msat"].replace("msat", ""))
+    # own_initial_balance = int(channel["inflight"]["our_funding_msat"].replace("msat", ""))
+
+    total_balance = int(channel["total_msat"].replace("msat", ""))
+    own_initial_balance = int(channel["to_us_msat"].replace("msat", ""))
     remote_initial_balance = total_balance - own_initial_balance
     scid = channel["short_channel_id"]
     
@@ -470,9 +487,9 @@ def extend_rebalancing_graph(plugin, own_id, rebalancing_graph: nx.DiGraph) -> n
       own_obj_func_coef, remote_obj_func_coef = 0, 1
 
     if not rebalancing_graph.has_edge(own_id, peer_id):
-      rebalancing_graph.add_edge(own_id, peer_id, flow_bound = own_flow_bound, scid = scid, objective_function_coefficient = own_obj_func_coef)
+      rebalancing_graph.add_edge(own_id, peer_id, flow_bound = own_flow_bound, short_channel_id = scid, objective_function_coefficient = own_obj_func_coef)
     if not rebalancing_graph.has_edge(peer_id, own_id):
-      rebalancing_graph.add_edge(peer_id, own_id, flow_bound = remote_flow_bound, scid = scid, objective_function_coefficient = remote_obj_func_coef) 
+      rebalancing_graph.add_edge(peer_id, own_id, flow_bound = remote_flow_bound, short_channel_id = scid, objective_function_coefficient = remote_obj_func_coef) 
 
   return rebalancing_graph
   
@@ -603,9 +620,9 @@ def LP_global_rebalancing(plugin, rebalancing_graph) -> list:
     except AttributeError:
         plugin.log('Encountered an attribute error')
 
-def cycle_decomposition(balance_updates, rebalancing_graph) -> list:
+def cycle_decomposition(balance_updates) -> list:
     # Step 6: Cycle decomposition on MPC delegate
-    # Ask maybe we should clean balance_updates before?
+    # TODO add case where the model received from 1LP is infeasible meaning there will be nothing to route
     cycle_flows = [[]]
 
     # Clean balances updates from zero ones and create dictionary
@@ -725,6 +742,7 @@ def cleanup(plugin, label, payload, rpc_result, error=None):
 
     return rpc_result
 
+
 def sort_cycle(current: str, cycle: list, result_cycle: list) -> list:
   if len(cycle) == 0:
     return result_cycle
@@ -819,7 +837,7 @@ def htlc_creation_for_cycle(plugin, cycle: list, retry_for: int = 60):
 
             for edge in edges_mid:
               plugin.log(f"Casting amount of satoshi in satoshi for {edge}...")
-              # TODO pull the scids somehow, now they are empty
+              # TODO Check if this works correctly
               hop = {'id': edge[1], 'channel': edge[3],'msatoshi': edge[2], 'amount_msat': Millisatoshi(edge[2])}
               route_mid.append(hop)
             
