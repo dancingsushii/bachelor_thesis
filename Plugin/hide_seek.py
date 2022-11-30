@@ -230,10 +230,11 @@ def prepare_hide_seek(plugin, source_request: RebalanceMessage = None):
   # Cycle decomposition
   cycle_flows = cycle_decomposition(balance_updates)
   # cycle_flows is a list containing cycle flows. Cycle flow is a list of triples [(alice, bob, 5), (bob, carol, 5), (carol, alice, 5)].
-  # TODO add scid's to cycle_flows, CHECK if it's correct
+  cycle_flows_with_scids = []
   for cycle in cycle_flows:
-    for cycle[0], cycle[1] in cycle:
-      cycle += rebalancing_graph[cycle[0]][cycle[1]]["short_channel_id"]
+    short_channel_id = rebalancing_graph[cycle[0]][cycle[1]]["short_channel_id"]
+    quadriple = (cycle[0], cycle[1], cycle[2], short_channel_id)
+    cycle_flows_with_scids.append(quadriple)
 
   for cycle_flow in cycle_flows:
     cycle_members = list(map(lambda cycle: cycle[0], cycle_flow))
@@ -423,7 +424,7 @@ def decide_to_participate(plugin) -> bool:
 def extend_rebalancing_graph_with_local_data(plugin, own_id, rebalancing_graph: nx.DiGraph) -> nx.DiGraph:
   """Extends the rebalancing graph with the required local graph information.\n
   Edges get added with ``initial_balance`` values in msat that mean: for A --> B edge ``initial_balance`` = how much msat can A send to B.\n
-  channel["funding_msat"] contains initial balance attribute in listpeers RPC. Initial balance is not required for hide and seek."""
+  channel["inflight"]["our_funding_msat"] contains initial balance attribute in listpeers RPC. Initial balance is not required for hide and seek."""
   
   peers = get_peers(plugin)
   peer_ids = list(map(lambda peer: peer["id"], peers))
@@ -432,15 +433,16 @@ def extend_rebalancing_graph_with_local_data(plugin, own_id, rebalancing_graph: 
   for peer in peers:
     
     peer_id, channel = peer["id"], peer["channels"][0]
-    own_initial_balance = int(channel["funding_msat"][own_id].replace("msat", ""))
-    remote_initial_balance = int(channel["funding_msat"][peer_id].replace("msat", ""))
+    total_balance = int(channel["inflight"]["total_funding_msat"].replace("msat", ""))
+    own_initial_balance = int(channel["inflight"]["our_funding_msat"].replace("msat", ""))
+    remote_initial_balance = total_balance - own_initial_balance
     scid = channel["short_channel_id"]
     # TODO calculate flow_bounds here and pass it instead of own_ and remote_ initial_balances!
 
     if not rebalancing_graph.has_edge(own_id, peer_id):
-      rebalancing_graph.add_edge(own_id, peer_id, flow_bound = own_initial_balance, scid = scid, objective_function_coefficient = "TODO")
+      rebalancing_graph.add_edge(own_id, peer_id, flow_bound = own_initial_balance, short_channel_id = scid, objective_function_coefficient = "TODO")
     if not rebalancing_graph.has_edge(peer_id, own_id):
-      rebalancing_graph.add_edge(peer_id, own_id, flow_bound = remote_initial_balance, scid = scid, objective_function_coefficient = "TODO")    
+      rebalancing_graph.add_edge(peer_id, own_id, flow_bound = remote_initial_balance, short_channel_id = scid, objective_function_coefficient = "TODO")    
 
   return rebalancing_graph
 
@@ -454,9 +456,9 @@ def extend_rebalancing_graph(plugin, own_id, rebalancing_graph: nx.DiGraph) -> n
   for peer in peers:
     
     peer_id, channel = peer["id"], peer["channels"][0]
-    total_balance = int(channel["total_msat"].replace("msat", ""))
-    own_initial_balance = int(channel["funding_msat"][own_id].replace("msat", ""))
-    remote_initial_balance = int(channel["funding_msat"][peer_id].replace("msat", ""))
+    total_balance = int(channel["inflight"]["total_funding_msat"].replace("msat", ""))
+    own_initial_balance = int(channel["inflight"]["our_funding_msat"].replace("msat", ""))
+    remote_initial_balance = total_balance - own_initial_balance
     scid = channel["short_channel_id"]
     
     half_of_capacity = total_balance/2
@@ -723,6 +725,15 @@ def cleanup(plugin, label, payload, rpc_result, error=None):
 
     return rpc_result
 
+def sort_cycle(current: str, cycle: list, result_cycle: list) -> list:
+  if len(cycle) == 0:
+    return result_cycle
+  current_tuple = next(filter(lambda element: element[0] == current, cycle))
+  result_cycle.append(current_tuple)
+  current = current_tuple[1]
+  cycle.remove(current_tuple)
+  return sort_cycle(current, cycle, result_cycle)
+  
 
 def htlc_creation_for_cycle(plugin, cycle: list, retry_for: int = 60):
     """Method for cyclic creation of HTLC.
@@ -731,21 +742,10 @@ def htlc_creation_for_cycle(plugin, cycle: list, retry_for: int = 60):
     """
     plugin.log('Starting htlc_creation_for_cycles method...')
 
-    # For this cycle we will input the necessary data but in real setup we will get it from another node
-    # cycle = [(alice_id, carol_id, 25000),(carol_id, bob_id, 25000), (bob_id, alice_id, 25000)]
-
-    # TODO rearrange cycle so that start will always be from the receiver node 
-    # e.g. if it's Alice it shouldn't be (Bob, Alice, 5), (Alice, Carol, 5), (Carol, Bob, 5)
-    # But (Alice, Carol, 5), (Carol, Bob, 5), (Bob, Alice, 5)
-    # (Bob, Alice, 5), (Alice, Carol, 5), (Carol, Bob, 5), 
-
     my_node_id = plugin.getinfo.get('id')
 
-    # for edge in cycle:
-    #   if edge[0][0] != my_node_id and edge[-1][1] != my_node_id:
-    #     # False arrengement -> reorder CHECK THIS
-    #     cycle[0] = edge[my_node_id]
-
+    if cycle[0][0] != my_node_id:
+      cycle = sort_cycle(my_node_id, cycle)
 
     msatoshi = cycle[0][2]
     if msatoshi:
