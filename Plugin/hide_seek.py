@@ -18,6 +18,7 @@ MESSAGE_BUS_TOPIC = 'hide_and_seek_message_bus'
 REBALANCE_REQ_TIMEOUT_S = 60
 REBALANCE_RES_TIMEOUT_S = 60*10
 REBALANCE_REQ_SEARCH_DEPTH = 100
+CYCLE_FLOW_REQUEST_TIMEOUT_S = 60
 #endregion
 
 plugin = Plugin()
@@ -226,22 +227,34 @@ def prepare_hide_seek(plugin, source_request: RebalanceMessage = None):
     return
 
   # we are at initiator. it has the rebalancing_graph.
+  for edge in rebalancing_graph.edges:
+    graph_for_LP = rebalancing_graph.get_edge_data(edge[0], edge[1])
+    plugin.log(f"Edge between {edge[0]} and {edge[1]} has data: {graph_for_LP}")
+    
+  
   balance_updates = LP_global_rebalancing(plugin, rebalancing_graph)
   # Cycle decomposition
   cycle_flows = cycle_decomposition(balance_updates)
   # cycle_flows is a list containing cycle flows. Cycle flow is a list of triples [(alice, bob, 5), (bob, carol, 5), (carol, alice, 5)].
   cycle_flows_with_scids = []
+  cycle_with_scid = []
+
+  plugin.log(f"Cycle flows are: {cycle_flows}...")
+  plugin.log(f"The total rebalancing graph has {len(rebalancing_graph.nodes)} nodes and {len(rebalancing_graph.edges)} edges... ")
   for cycle in cycle_flows:
-    short_channel_id = rebalancing_graph[cycle[0]][cycle[1]]["short_channel_id"]
-    quadriple = (cycle[0], cycle[1], cycle[2], short_channel_id)
-    cycle_flows_with_scids.append(quadriple)
+    for edge in cycle:
+      short_channel_id = rebalancing_graph[edge[0]][edge[1]]['short_channel_id']
+      quadriple = (edge[0], edge[1], edge[2], short_channel_id)
+      cycle_with_scid.append(quadriple)
+  cycle_flows_with_scids.append(cycle_with_scid)
+  plugin.log(f"The cycle flows with scid's are {cycle_flows_with_scids} ... ")
 
   for cycle_flow in cycle_flows:
     cycle_members = list(map(lambda cycle: cycle[0], cycle_flow))
     
     if own_node_id in cycle_members:
-      plugin.log(f"Starting executing cycle from self.")
-      htlc_creation_for_cycle(cycle_flow, plugin)
+      plugin.log(f"Starting executing cycle {cycle_flow} from self.")
+      htlc_creation_for_cycle(plugin, cycle_flow)
 
     else:
       # We pick one random member m_i from each of the cycles.
@@ -249,13 +262,14 @@ def prepare_hide_seek(plugin, source_request: RebalanceMessage = None):
       # we send them (m_i) cycle information for them (m_i) to call HTLC for cycle creation.
       try:
         plugin.log(f"Sending cycle information to {random_member}")
-        cycle_information = "" # TODO
-        request_id = send_cycle_flow(plugin, random_member, payload=cycle_information)
+        cycle_information = str(cycle_flow)
+        send_cycle_flow(plugin, random_member, payload=cycle_information)
         # wait for the response # TODO consider if we need to wait for request ACK!
-        request_ack = response_handler.get_response(request_id, 60) # TODO add timeout value to params region CYCLE_FLOW_REQUEST_TIMEOUT_S
-      except Empty:
-        plugin.log(f"Sending cycle information to {random_member} timed out!") 
-        # TODO if request timed out, pick another member!
+        # request_ack = response_handler.get_response(request_id, 60) # TODO add timeout value to params region CYCLE_FLOW_REQUEST_TIMEOUT_S
+        # except Empty:
+        # plugin.log(f"Sending cycle information to {random_member} timed out!") 
+        # TODO if request timed out, pick another member! Go back to last else:
+
       except Exception as e:
         error = str(e)
         plugin.log(f"Unknown error occured while sending cycle information to {random_member}. Exception: {error}") 
@@ -330,8 +344,10 @@ def handle_incoming_hide_seek_request(plugin, request:RebalanceMessage):
   threading.Thread(name="handler", target=prepare_hide_seek, args=(plugin, request)).start()
 
 def handle_incoming_cycle_flow_processing_request(plugin, request:RebalanceMessage):
-  plugin.log("waaaat")
-  # TODO add cycle flow processing logic
+  # TODO add ACK logic if we want to get ACK for received cycle in order to retransmit the cycle to another random peer
+  plugin.log(f"Cycle flow: {request.payload} received... ")
+  deserialized_cycle = ast.literal_eval(request.payload)
+  htlc_creation_for_cycle(plugin, deserialized_cycle)
 
 def send_rebalance_out(plugin, peer_id, request_body: RebalanceRequestBody) -> int:
   """Sends rebalance out request to given peer_id."""
@@ -377,24 +393,15 @@ def send_rebalance_res(plugin, source_request: RebalanceMessage, rebalancing_gra
   request_id = send_message(plugin, source_request.peer, msgtype, payload, msgid)
   return request_id
 
-def send_cycle_flow(plugin, peer_id, payload) -> int:
+def send_cycle_flow(plugin, peer_id, payload):
   """Sends cycle flow request to given peer_id."""
-  # TODO
-  return -1
+  plugin.log(f"Send cycle flow: {payload} to peer: {peer_id}...")
+  # expect_response=True,  response_handler=response_handler deleted since we don't use ACK's now
+  send_message(plugin, peer_id, HideSeekMsgCode.CYCLE_FLOW_REQ_MSG_HEX, payload)
 
 # #endregion
 
 # #region graph logic
-
-# def list_peers(id = None, level = None) -> list:
-#   shell_input = ['lightning-cli', 'listpeers']
-#   if id is not None: 
-#     shell_input.append(str(id))
-#   if level is not None:
-#     shell_input.append(str(level))
-#   shell_byte_output = subprocess.check_output(shell_input)
-#   peers = json.loads(shell_byte_output)
-#   return peers
 
 def get_node_id(plugin):
   return plugin.rpc.getinfo()["id"]
@@ -437,8 +444,8 @@ def extend_rebalancing_graph_with_local_data(plugin, own_id, rebalancing_graph: 
     # total_balance = int(channel["inflight"]["total_funding_msat"].replace("msat", ""))
     # own_initial_balance = int(channel["inflight"]["our_funding_msat"].replace("msat", ""))
   
-    total_balance = int(channel["total_msat"].replace("msat", ""))
-    own_initial_balance = int(channel["to_us_msat"].replace("msat", ""))
+    total_balance = int(channel["total_msat"])
+    own_initial_balance = int(channel["to_us_msat"])
     remote_initial_balance = total_balance - own_initial_balance
     scid = channel["short_channel_id"]
 
@@ -473,8 +480,8 @@ def extend_rebalancing_graph(plugin, own_id, rebalancing_graph: nx.DiGraph) -> n
     # total_balance = int(channel["inflight"]["total_funding_msat"].replace("msat", ""))
     # own_initial_balance = int(channel["inflight"]["our_funding_msat"].replace("msat", ""))
 
-    total_balance = int(channel["total_msat"].replace("msat", ""))
-    own_initial_balance = int(channel["to_us_msat"].replace("msat", ""))
+    total_balance = int(channel["total_msat"])
+    own_initial_balance = int(channel["to_us_msat"])
     remote_initial_balance = total_balance - own_initial_balance
     scid = channel["short_channel_id"]
     
@@ -510,14 +517,11 @@ def append_to_A(d, r, c, data, row, col):
           col.append(c[i])
 
 def LP_global_rebalancing(plugin, rebalancing_graph) -> list:
-    # Step 5: Executes LP on that graph (need a license be deployed)
     try:
         n = rebalancing_graph.number_of_nodes()
         m = rebalancing_graph.number_of_edges()
         list_of_nodes = list(rebalancing_graph.nodes)
         list_of_edges = list(rebalancing_graph.edges)
-
-        plugin.log(f"Received rebalancing graph with {n} nodes and {m} edges")
 
         # Create a new model, variables and set an objective
         model = gp.Model("rebalancing-LP")
@@ -530,8 +534,6 @@ def LP_global_rebalancing(plugin, rebalancing_graph) -> list:
             u, v = list_of_edges[edge_index]
             if 'objective_function_coefficient' in rebalancing_graph[u][v]:
                 obj[edge_index] = rebalancing_graph[u][v]['objective_function_coefficient']
-
-        plugin.log(f"obj array created successfully")
 
         model.setObjective(obj @ x, GRB.MAXIMIZE)
 
@@ -574,6 +576,7 @@ def LP_global_rebalancing(plugin, rebalancing_graph) -> list:
 
                 # ineq 2b: - \sum_{out edges} f(u,v)
                 append_to_A(-1, 2 * m + n + i, edge_index, data, row, col)
+                plugin.log(f'Row number is {row}')
 
             for edge in rebalancing_graph.in_edges(u):
                 edge_index = list_of_edges.index(edge)
@@ -592,14 +595,17 @@ def LP_global_rebalancing(plugin, rebalancing_graph) -> list:
         A = sp.csr_matrix((data, (row, col)), shape=(A_num_of_rows, A_num_of_columns))
 
         # Add constraints and optimize model
+        plugin.log(f'A.data is {A.data}')
+        plugin.log(f'RHS is {rhs}')
         model.addConstr(A @ x <= rhs, name="matrix form constraints")
         model.optimize()
 
         try:
-            plugin.log(x.X)
+            plugin.log(f'{x.X}')
             plugin.log(f'Obj: {model.objVal}')
 
             flows = x.X
+            plugin.log(f'Flows are: {flows}')
         except:
             # infeasible model, set all flows to zero
             plugin.log('model is infeasible, setting all flows to zero')
@@ -611,6 +617,7 @@ def LP_global_rebalancing(plugin, rebalancing_graph) -> list:
         for edge_index in range(m):
             u, v = list_of_edges[edge_index]
             balance_updates.append((u, v, int(flows[edge_index])))
+            plugin.log(f'Balance updates is constructing {balance_updates}')
 
         return balance_updates
 
@@ -622,7 +629,7 @@ def LP_global_rebalancing(plugin, rebalancing_graph) -> list:
 
 def cycle_decomposition(balance_updates) -> list:
     # Step 6: Cycle decomposition on MPC delegate
-    # TODO add case where the model received from 1LP is infeasible meaning there will be nothing to route
+    # TODO Enhancement add case where the model received from 1LP is infeasible meaning there will be nothing to route
     cycle_flows = [[]]
 
     # Clean balances updates from zero ones and create dictionary
@@ -713,7 +720,8 @@ def get_node_alias(node_id):
 
 
 def get_channel(plugin, payload, peer_id, scid, check_state: bool = False):
-    peer = list_peers(peer_id).get('peers')[0]
+    peer = plugin.rpc.listpeers(peer_id)['peers'][0]
+    #peer = list_peers(peer_id).get('peers')[0]
     channel = next(c for c in peer['channels'] if c.get('short_channel_id') == scid)
     if check_state:
         if channel['state'] != "CHANNELD_NORMAL":
@@ -760,15 +768,18 @@ def htlc_creation_for_cycle(plugin, cycle: list, retry_for: int = 60):
     """
     plugin.log('Starting htlc_creation_for_cycles method...')
 
-    my_node_id = plugin.getinfo.get('id')
+    my_node_id = get_node_id(plugin)
 
     if cycle[0][0] != my_node_id:
-      cycle = sort_cycle(my_node_id, cycle)
+      plugin.log(f'The starting node in cycle aren`t us, we are {my_node_id} and the starting is {cycle[0][0]}.')
+      result_cycle = []
+      cycle = sort_cycle(my_node_id, cycle, result_cycle)
 
     msatoshi = cycle[0][2]
     if msatoshi:
         msatoshi = Millisatoshi(msatoshi)
     retry_for = int(retry_for)
+    plugin.log(f'The amount of funds flowing is {msatoshi} and retry for is set to {retry_for}')
 
     outgoing_scid = scid_from_peer(plugin, cycle[0][1])
     incoming_scid = scid_from_peer(plugin, cycle[-1][0])
@@ -779,7 +790,6 @@ def htlc_creation_for_cycle(plugin, cycle: list, retry_for: int = 60):
         "retry_for": retry_for,
     }
 
-    #my_peers = list_peers()["peers"] 
     my_peers = plugin.rpc.listpeers()['peers']
     plugin.log(f"My node info is: {my_node_id} and my peers are {my_peers}")
 
@@ -837,7 +847,7 @@ def htlc_creation_for_cycle(plugin, cycle: list, retry_for: int = 60):
 
             for edge in edges_mid:
               plugin.log(f"Casting amount of satoshi in satoshi for {edge}...")
-              # TODO Check if this works correctly
+              # TODO Check if scid's read correctly, Here we have a problem, fix this
               hop = {'id': edge[1], 'channel': edge[3],'msatoshi': edge[2], 'amount_msat': Millisatoshi(edge[2])}
               route_mid.append(hop)
             
@@ -924,7 +934,6 @@ def start_hide_seek(plugin):
     # start rebalancing daemon
     plugin.log('Starting the rebalancing deamon for hide and seek...')
     threading.Thread(name="initiator", target=prepare_hide_seek, args=(plugin, )).start()
-
 
 plugin.add_notification_topic(MESSAGE_BUS_TOPIC)
 

@@ -97,8 +97,11 @@ def LP_global_rebalancing(rebalancing_graph) -> list:
         A = sp.csr_matrix((data, (row, col)), shape=(A_num_of_rows, A_num_of_columns))
 
         # Add constraints and optimize model
+        print(rhs)
+        print(model)
         model.addConstr(A @ x <= rhs, name="matrix form constraints")
         model.optimize()
+
 
         try:
             print(x.X)
@@ -181,49 +184,36 @@ def cycle_decomposition(balance_updates, rebalancing_graph) -> list:
 def main():
     # The simplest graph
     triangle = nx.DiGraph()
-    triangle.add_nodes_from(['Alice', 'Bob', 'Carol'])
-
-    # Alice --> Bob and Alice <-- Bob
-    triangle.add_edge('Alice', 'Bob')
-    triangle.add_edge('Bob', 'Alice')
-
-    triangle['Alice']['Bob']['initial_balance'] = 20
-    triangle['Bob']['Alice']['initial_balance'] = 10
-
-    triangle['Alice']['Bob']['satoshis'] = 30
-    triangle['Bob']['Alice']['satoshis'] = 30
-
-    triangle['Alice']['Bob']['objective_function_coefficient'] = 1
-    triangle['Alice']['Bob']['flow_bound'] = 5
-    triangle['Bob']['Alice']['flow_bound'] = 0
+    triangle.add_nodes_from(['Carol', 'Bob', 'Alice'])
 
     # Bob --> Carol and Bob <-- Carol
     triangle.add_edge('Bob', 'Carol')
     triangle.add_edge('Carol', 'Bob')
-
-    triangle['Carol']['Bob']['initial_balance'] = 4
-    triangle['Bob']['Carol']['initial_balance'] = 10
-
-    triangle['Carol']['Bob']['satoshis'] = 14
-    triangle['Bob']['Carol']['satoshis'] = 14
-
-    triangle['Bob']['Carol']['objective_function_coefficient'] = 1
-    triangle['Carol']['Bob']['flow_bound'] = 0
-    triangle['Bob']['Carol']['flow_bound'] = 3
+    triangle['Carol']['Bob']['flow_bound'] = 10000000
+    triangle['Bob']['Carol']['flow_bound'] = 0
+    triangle['Carol']['Bob']['objective_function_coefficient'] = 1
+    triangle['Bob']['Carol']['objective_function_coefficient'] = 0
 
     # Carol --> Alice and Carol <-- Alice
     triangle.add_edge('Carol', 'Alice')
     triangle.add_edge('Alice', 'Carol')
+    triangle['Carol']['Alice']['flow_bound'] = 0
+    triangle['Alice']['Carol']['flow_bound'] = 17500000
+    triangle['Alice']['Carol']['objective_function_coefficient'] = 1
+    triangle['Carol']['Alice']['objective_function_coefficient'] = 0
 
-    triangle['Carol']['Alice']['initial_balance'] = 40
-    triangle['Alice']['Carol']['initial_balance'] = 20
+    # Alice --> Bob and Alice <-- Bob
+    triangle.add_edge('Alice', 'Bob')
+    triangle.add_edge('Bob', 'Alice')
+    triangle['Bob']['Alice']['flow_bound'] = 25000000
+    triangle['Alice']['Bob']['flow_bound'] = 0
+    triangle['Bob']['Alice']['objective_function_coefficient'] = 1
+    triangle['Alice']['Bob']['objective_function_coefficient'] = 0
 
-    triangle['Carol']['Alice']['satoshis'] = 60
-    triangle['Alice']['Carol']['satoshis'] = 60
 
-    triangle['Carol']['Alice']['objective_function_coefficient'] = 1
-    triangle['Carol']['Alice']['flow_bound'] = 10
-    triangle['Alice']['Carol']['flow_bound'] = 0
+    for edge in triangle.edges:
+        graph_for_LP = triangle.get_edge_data(edge[0], edge[1])
+        print(f"Edge between " + edge[0] + " and " + edge[1] + " has data:  " + str(graph_for_LP))
 
     lp_outcome = LP_global_rebalancing(triangle)
     print(lp_outcome)
