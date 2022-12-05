@@ -1,225 +1,158 @@
-import gurobipy as gp
-from gurobipy import GRB
-import numpy as np
-import scipy.sparse as sp
-import networkx as nx
-import matplotlib.pyplot as plt
+#!/usr/bin/env bash
+## Graph connection setup script
 
+set -E
 
-def append_to_A(d, r, c, data, row, col):
-    # append single items or lists to data, row, col
-    if type(d) != list:
-        data.append(d)
-        row.append(r)
-        col.append(c)
-    else:
-        for i in range(len(d)):
-            data.append(d[i])
-            row.append(r[i])
-            col.append(c[i])
+. $LIBPATH/util/timers.sh
 
+PEER_PATH="$SHAREPATH/$HOSTNAME"
+PEER_FILE="$PEER_PATH/lightning-peer.conf"
+GRAPH_STRUCTURE_WRITE_SCRIPT="$HOME/run/graphlib/setup_graph.py"
+GRAPH_STRUCTURE_FILE="$SHAREPATH/graph_pickle.gpickle.gz"
+GRAPH_CONFIG_DIR="$HOME/run/graphlib/configs"
 
-def LP_global_rebalancing(rebalancing_graph) -> list:
-    # Step 5: Executes LP on that graph (need a license be deployed)
-    try:
-        n = rebalancing_graph.number_of_nodes()
-        m = rebalancing_graph.number_of_edges()
-        list_of_nodes = list(rebalancing_graph.nodes)
-        list_of_edges = list(rebalancing_graph.edges)
+DEFAULT_PEER_PORT=19846
+DEFAULT_PEER_TIMEOUT=2
+DEFAULT_TOR_TIMEOUT=60
 
-        # Create a new model, variables and set an objective
-        model = gp.Model("rebalancing-LP")
-        x = model.addMVar(shape=m, vtype=GRB.CONTINUOUS, name="x")
-        obj = np.zeros(m, dtype=float)
+###############################################################################
+# Methods
+###############################################################################
 
-        for edge_index in range(m):
-            u, v = list_of_edges[edge_index]
-            if 'objective_function_coefficient' in rebalancing_graph[u][v]:
-                obj[edge_index] = rebalancing_graph[u][v]['objective_function_coefficient']
+get_peer_config() {
+  [ -n "$1" ] && find "$SHAREPATH/$1"* -name lightning-peer.conf 2>&1
+}
 
+is_node_configured() {
+  [ -n "$1" ] && [ -n "$(lnpy getpeerlist | grep $1)" ]
+}
 
-        model.setObjective(obj @ x, GRB.MAXIMIZE)
+is_node_connected() {
+  [ -n "$1" ] && [ "$(lnpy is_peer_connected $1)" -eq 1 ]
+}
 
-        data = []
-        row = []
-        col = []
-        rhs = np.zeros(2 * m + 2 * n)
+is_channel_confirmed() {
+  [ -n "$1" ] && [ "$(lnpy peerchannelcount "$1")" != "0" ]
+}
 
-        # constraint 1: respecting capacities: 0 <= f(u,v) <= m(u,v)
-        # I.e. -f(u,v) <= 0 and f(u,v) <= m(u,v)
-        for edge_index in range(m):
-            u, v = list_of_edges[edge_index]
+is_channel_funded() {
+  [ -n "$1" ] && [ "$(lnpy peerchannelbalance "$1")" != "0" ]
+}
 
-            # -f(u,v) <= 0
-            append_to_A(-1, edge_index, edge_index, data, row, col)
+# Block until the given file appears or the given timeout is reached.
+# Exit status is 0 iff the file exists.
+wait_file() {
+  local file="$1"; shift
+  local wait_seconds="${1:-10}"; shift # 10 seconds as default timeout
+  test $wait_seconds -lt 1 && echo 'At least 1 second is required' && return 1
 
-            # f(u,v) <= m(u,v)
-            append_to_A(1, m + edge_index, edge_index, data, row, col)
-            rhs[m + edge_index] = rebalancing_graph[u][v]['flow_bound']
+  until test $((wait_seconds--)) -eq 0 -o -e "$file" ; do sleep 1; done
 
-        for edge_index in range(m):
-            u, v = list_of_edges[edge_index]
-            rhs[m + edge_index] = rebalancing_graph[u][v]['flow_bound']
+  test $wait_seconds -ge 0 # equivalent: let ++wait_seconds
+}
 
-        print(f'done with constraint 1')
+## Exit out if pickled graph file not found
+own_alias=`cat /etc/hostname`
+if [ "$own_alias" = 'master.regtest.node' ]; then exit 0; fi
+if [ ! -e "$GRAPH_STRUCTURE_FILE" ]; then exit 0; fi
 
-        # constraint 2: flow conservation: sum of in flows = some of out flows
-        # ineq 2a: \sum_{out edges} f(u,v) - \sum_{in edges} f(v,u) <= 0
-        # ineq 2b: \sum_{in edges} f(v,u) - \sum_{out edges} f(u,v) <= 0
-        for i in range(n):
-            # all bounds are zero, thus no need to edit rhs
+## Indicate readiness
+readiness_file="/share/${own_alias}_readiness"
+echo "${own_alias} is ready to accept connections!" >> "$readiness_file"
+echo && printf "Indicated my readiness by creating $readiness_file"
 
-            u = list_of_nodes[i]
+## Set defaults.
+[ -z "$CLN_PEER_PORT" ] && CLN_PEER_PORT=$DEFAULT_PEER_PORT
+[ -z "$PEER_TIMEOUT" ]  && PEER_TIMEOUT="$DEFAULT_PEER_TIMEOUT"
+[ -z "$TOR_TIMEOUT" ]   && TOR_TIMEOUT="$DEFAULT_TOR_TIMEOUT"
 
-            for edge in rebalancing_graph.out_edges(u):
-                edge_index = list_of_edges.index(edge)
+[ -n "$(pgrep tor)" ] \
+  && CONN_TIMEOUT="$TOR_TIMEOUT" \
+  || CONN_TIMEOUT="$PEER_TIMEOUT"
 
-                # ineq 2a: \sum_{out edges} f(u,v)
-                append_to_A(1, 2 * m + i, edge_index, data, row, col)
+templ banner "Setting the graph structure according to saved networkx"
 
-                # ineq 2b: - \sum_{out edges} f(u,v)
-                append_to_A(-1, 2 * m + n + i, edge_index, data, row, col)
+echo && printf "Executing the python script to prepare the graph structure setup\n"
 
-            for edge in rebalancing_graph.in_edges(u):
-                edge_index = list_of_edges.index(edge)
+python3 "$GRAPH_STRUCTURE_WRITE_SCRIPT"
 
-                # ineq 2a: - \sum_{in edges} f(v,u)
-                append_to_A(-1, 2 * m + i, edge_index, data, row, col)
+peer_configs=`find $GRAPH_CONFIG_DIR -maxdepth 1 -type f -name *.conf`
+if [ -n "$peer_configs" ]; then
+    echo && printf "Configuring peers:\n"
+    for peer_config in $peer_configs; do
+        echo && printf "Looking at $peer_config"
+        # get graph config properties
+        peer_alias=`cat $peer_config | kgrep PEER_ALIAS`
+        our_funding=`cat $peer_config | kgrep OUR_FUNDING`
+        their_funding=`cat $peer_config | kgrep THEIR_FUNDING`
+        peer_lightning_config_file=`get_peer_config $peer_alias`
+        if [ ! -e "$peer_lightning_config_file" ]; then
+            ## Await the creation of the <alias>.regtest.node folders and corresponding lightning-peer.conf files if neccessary
+            echo && printf "$peer_alias lightning configuration file did not exist in share when requested, waiting for its creation...\n"
+            peer_lightning_config_file="$SHAREPATH/$peer_alias.regtest.node/lightning-peer.conf"
+            wait_file "$peer_lightning_config_file" 30 || {
+                echo "ERROR: $peer_lightning_config_file missing after waiting 30 seconds\n"
+                templ fail
+                exit 1
+            }
+        fi
 
-                # ineq 2b: \sum_{in edges} f(v,u)
-                append_to_A(1, 2 * m + n + i, edge_index, data, row, col)
+        ## Check readiness file existence
+        peers_readiness_file="/share/${peer_alias}.regtest.node_readiness"
+        echo && printf "Waiting for $peers_readiness_file readiness file to appear!\n"
+        wait_file "$peers_readiness_file" 60 || {
+            echo "ERROR: ${peer_alias} readiness not indicated after one minute of waiting!\n"
+            templ fail
+            exit 1
+        }
+        echo && printf "$peers_readiness_file readiness file appeared, connecting to peer!\n"
 
-        print('done with constraint 2')
+        ###############################################################################
+        # Peer Connection
+        ###############################################################################
 
-        A_num_of_rows = 2 * m + 2 * n
-        A_num_of_columns = m
+        ## Parse current peering info.
+        onion_host=`cat $peer_lightning_config_file | kgrep ONION_NAME`
+        node_id="$(cat $peer_lightning_config_file | kgrep NODE_ID)"
+        if [ -z "$LOCAL_ONLY" ] && [ -n "$(pgrep tor)" ] && [ -n "$onion_host" ]; then
+            peer_host="$onion_host"
+        else
+            peer_host="$(cat $peer_lightning_config_file | kgrep HOST_NAME)"
+        fi
 
-        A = sp.csr_matrix((data, (row, col)), shape=(A_num_of_rows, A_num_of_columns))
+        ## If valid peer, then connect to node.
+        if ! is_node_configured "$node_id"; then
+            printf "\n$IND Adding node: $(prevstr $node_id)@$(prevstr -l 20 $peer_host):$CLN_PEER_PORT"
+            lightning-cli connect "$node_id@$peer_host:$CLN_PEER_PORT" > /dev/null 2>&1
+            printf "\n$IND Connecting to node"
+            # wait for channel to get established
+            while ! is_node_connected $node_id > /dev/null 2>&1; do sleep 1.5 && printf "."; done; 
+        fi
 
-        # Add constraints and optimize model
-        print(rhs)
-        print(model)
-        model.addConstr(A @ x <= rhs, name="matrix form constraints")
-        model.optimize()
+        ( while ! is_node_connected $node_id; do sleep 1 && printf "."; done; ) & timeout_child $CONN_TIMEOUT
+        is_node_connected $node_id && templ conn || templ tout
 
+        ###############################################################################
+        # Channel Funding
+        ###############################################################################
 
-        try:
-            print(x.X)
-            print(f'Obj: {model.objVal}')
+        ## If valid peer, then connect to node.
+        if is_node_connected $node_id; then
+            if ! is_channel_confirmed $node_id; then
+                printf "$IND Opening channel with $peer_alias for $our_funding sats capacity and push $their_funding sats to them.\n"
+                printf "$IND Waiting for channel to confirm .\n"
+                lightning-cli fundchannel id=$node_id amount="${our_funding}sat" push_msat="${their_funding}sat"> /dev/null 2>&1
+                while ! is_channel_funded $node_id > /dev/null 2>&1; do sleep 1.5 && printf "."; done; templ ok
+            fi
+            printf "$IND Channel balance:"; templ brkt "$(lnpy peerchannelbalance $node_id)"
+        else
+            printf "$IND No connection to $peer!" && templ fail
+        fi
 
-            flows = x.X
-        except:
-            # infeasible model, set all flows to zero
-            print('model is infeasible, setting all flows to zero')
-            flows = list(np.zeros(m, dtype=int))
+    done
+fi
 
-        balance_updates = []
-
-        # flow updates
-        for edge_index in range(m):
-            u, v = list_of_edges[edge_index]
-            balance_updates.append((u, v, int(flows[edge_index])))
-
-        return balance_updates
-
-    except gp.GurobiError as e:
-        print('Error code ' + str(e.errno) + ": " + str(e))
-
-    except AttributeError:
-        print('Encountered an attribute error')
-
-
-def cycle_decomposition(balance_updates, rebalancing_graph) -> list:
-    # Step 6: Cycle decomposition on MPC delegate
-    # Ask maybe we should clean balance_updates before?
-    cycle_flows = [[]]
-
-    # Clean balances updates from zero ones and create dictionary
-    active_edges = list(filter(lambda edge: edge[2] != 0, balance_updates))
-    active_edges_dictionary = dict([((a, b), c) for a, b, c in active_edges])
-
-    i = 0
-    while len(active_edges_dictionary) > 0:
-
-        # Weighted circulation graph and start counter for circles
-        circulation_graph_weighted = nx.DiGraph()
-
-        # Update graph from dictionary for cycle search
-        for e, w in active_edges_dictionary.items():
-            circulation_graph_weighted.add_edge(e[0], e[1], weight=w)
-
-        # Find a cycle using DFS
-        cycle = nx.find_cycle(circulation_graph_weighted)
-
-        # Add weights to cycle
-        for e in range(len(cycle)):
-            weight = active_edges_dictionary.get(cycle[e])
-            cycle[e] = (cycle[e][0], cycle[e][1], weight)
-
-        # Create a weighted graph from weighted cycle
-        cycle_graph = nx.DiGraph()
-        cycle_graph.add_weighted_edges_from(cycle)
-
-        # Find a minimum flow in the circulation graph
-        min_flow = min(dict(circulation_graph_weighted.edges).items(), key=lambda x: x[1]['weight'])
-        smallest_weight = min_flow[1]['weight']
-
-        # Create a cycle
-        for edge in cycle_graph.edges:
-            new_balance_update = (edge[0], edge[1], smallest_weight)
-            cycle_flows[i].append(new_balance_update)
-
-            active_edges_dictionary[edge] = active_edges_dictionary.get(edge) - new_balance_update[2]
-
-            if active_edges_dictionary[edge] == 0:
-                active_edges_dictionary.pop(edge)
-
-        i += 1
-        cycle_flows.append([])
-
-    cycle_flows.pop()
-    return cycle_flows
-
-
-def main():
-    # The simplest graph
-    triangle = nx.DiGraph()
-    triangle.add_nodes_from(['Carol', 'Bob', 'Alice'])
-
-    # Bob --> Carol and Bob <-- Carol
-    triangle.add_edge('Bob', 'Carol')
-    triangle.add_edge('Carol', 'Bob')
-    triangle['Carol']['Bob']['flow_bound'] = 10000000
-    triangle['Bob']['Carol']['flow_bound'] = 0
-    triangle['Carol']['Bob']['objective_function_coefficient'] = 1
-    triangle['Bob']['Carol']['objective_function_coefficient'] = 0
-
-    # Carol --> Alice and Carol <-- Alice
-    triangle.add_edge('Carol', 'Alice')
-    triangle.add_edge('Alice', 'Carol')
-    triangle['Carol']['Alice']['flow_bound'] = 0
-    triangle['Alice']['Carol']['flow_bound'] = 17500000
-    triangle['Alice']['Carol']['objective_function_coefficient'] = 1
-    triangle['Carol']['Alice']['objective_function_coefficient'] = 0
-
-    # Alice --> Bob and Alice <-- Bob
-    triangle.add_edge('Alice', 'Bob')
-    triangle.add_edge('Bob', 'Alice')
-    triangle['Bob']['Alice']['flow_bound'] = 25000000
-    triangle['Alice']['Bob']['flow_bound'] = 0
-    triangle['Bob']['Alice']['objective_function_coefficient'] = 1
-    triangle['Alice']['Bob']['objective_function_coefficient'] = 0
-
-
-    for edge in triangle.edges:
-        graph_for_LP = triangle.get_edge_data(edge[0], edge[1])
-        print(f"Edge between " + edge[0] + " and " + edge[1] + " has data:  " + str(graph_for_LP))
-
-    lp_outcome = LP_global_rebalancing(triangle)
-    print(lp_outcome)
-    cycle_decomposition(lp_outcome)
-    print(cycle_decomposition())
-
-
-if __name__ == "__main__":
-    main()
+## Indicate that your channels are setup according to graphspawner.conf
+node_channel_setup_file="/share/${own_alias}_channels_setup"
+echo "${own_alias} has setup all the provided channels!" >> "$node_channel_setup_file"
+echo && printf "Indicated that my channels are setup by creating $node_channel_setup_file"
